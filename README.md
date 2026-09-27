@@ -124,4 +124,6 @@ Inspired by the notch-companion concepts shared by design studios — this proje
 
 **If Mochi made you smile, a ⭐ helps a lot.**
 
+[Website](https://louis-cfm.github.io/coucou/) · [Privacy](https://louis-cfm.github.io/coucou/privacy.html) · [Terms](https://louis-cfm.github.io/coucou/terms.html) · [Support](https://louis-cfm.github.io/coucou/support.html)
+
 </div>
