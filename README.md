@@ -118,7 +118,8 @@ Inspired by the notch-companion concepts shared by design studios — this proje
 
 ## License
 
-[MIT](LICENSE) — do whatever you want, just keep the notice.
+- **Code:** [MIT](LICENSE) — use it, fork it, learn from it, just keep the copyright notice.
+- **Name, Mochi character, icon, sounds and media:** © Louis Raillé, all rights reserved — see [LICENSE-ASSETS.md](LICENSE-ASSETS.md). Shipping your own fork? Give it your own name and character.
 
 <div align="center">
 
