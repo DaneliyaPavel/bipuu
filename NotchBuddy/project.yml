@@ -11,9 +11,18 @@ settings:
     SWIFT_VERSION: "6.0"
     ENABLE_HARDENED_RUNTIME: YES
     CODE_SIGN_STYLE: Manual
-    CODE_SIGNING_REQUIRED: NO
-    CODE_SIGNING_ALLOWED: NO
     OTHER_SWIFT_FLAGS: "-strict-concurrency=complete"
+  configs:
+    Debug:
+      CODE_SIGNING_REQUIRED: NO
+      CODE_SIGNING_ALLOWED: NO
+    Release:
+      CODE_SIGNING_REQUIRED: YES
+      CODE_SIGNING_ALLOWED: YES
+      CODE_SIGN_IDENTITY: "Developer ID Application"
+      DEVELOPMENT_TEAM: YOUR_TEAM_ID
+      OTHER_CODE_SIGN_FLAGS: "--timestamp"
+      CODE_SIGN_ENTITLEMENTS: Resources/Coucou.entitlements
 
 targets:
   NotchBuddy:
