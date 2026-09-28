@@ -15,7 +15,15 @@ final class HookServer: @unchecked Sendable {
             .appendingPathComponent("NotchBuddy")
     }
     static var socketPath: String { supportDir.appendingPathComponent("nb.sock").path }
-    static var hookScriptPath: String { supportDir.appendingPathComponent("nb-hook").path }
+    static var hookScriptPath: String {
+        #if APPSTORE
+        // Written to ~/.claude/coucou/nb-hook via security-scoped bookmark during hook installation
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/coucou/nb-hook").path
+        #else
+        return supportDir.appendingPathComponent("nb-hook").path
+        #endif
+    }
 
     // No approval blocking state — notch is notification-only, user answers in VS Code
 
@@ -28,7 +36,9 @@ final class HookServer: @unchecked Sendable {
     // MARK: - Start
 
     func start() {
+        #if !APPSTORE
         installHookScript()
+        #endif
         Thread.detachNewThread { self.serverThread() }
     }
 
@@ -442,15 +452,19 @@ final class HookServer: @unchecked Sendable {
     // MARK: - nb-hook script installation
 
     func installHookScript() {
+        #if APPSTORE
+        // In App Store mode the script is written during settings hook installation
+        // (requires a security-scoped bookmark to ~/.claude chosen by the user)
+        #else
         let dir = Self.supportDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let scriptURL = URL(fileURLWithPath: Self.hookScriptPath)
-        let script = nbHookScript
-        try? script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try? nbHookScript.write(to: scriptURL, atomically: true, encoding: .utf8)
         _ = try? FileManager.default.setAttributes(
             [.posixPermissions: 0o755 as NSNumber],
             ofItemAtPath: scriptURL.path
         )
+        #endif
     }
 
     // MARK: - Claude Code settings.json hook installer
@@ -491,6 +505,12 @@ final class HookServer: @unchecked Sendable {
             settings = parsed
         }
         let hookPath = Self.hookScriptPath
+        #if APPSTORE
+        // Sandboxed apps create quarantined files; /bin/sh bypasses the quarantine flag
+        let quotedCmd = "/bin/sh \"\(hookPath.replacingOccurrences(of: "\"", with: "\\\""))\""
+        #else
+        let quotedCmd = "\"\(hookPath.replacingOccurrences(of: "\"", with: "\\\""))\""
+        #endif
         let events: [(String, Int)] = [
             ("SessionStart", 10), ("SessionEnd", 10),
             ("UserPromptSubmit", 10),
@@ -503,9 +523,8 @@ final class HookServer: @unchecked Sendable {
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         for (event, timeout) in events {
             var existing = hooks[event] as? [[String: Any]] ?? []
-            existing.removeAll { ($0["hooks"] as? [[String: Any]])?.contains { ($0["command"] as? String)?.contains("NotchBuddy") == true } ?? false }
-            let quotedPath = "\"\(hookPath.replacingOccurrences(of: "\"", with: "\\\""))\""
-            existing.append(["hooks": [["type": "command", "command": quotedPath, "timeout": timeout]]])
+            existing.removeAll { ($0["hooks"] as? [[String: Any]])?.contains { ($0["command"] as? String)?.contains("NotchBuddy") == true || ($0["command"] as? String)?.contains("coucou") == true } ?? false }
+            existing.append(["hooks": [["type": "command", "command": quotedCmd, "timeout": timeout]]])
             hooks[event] = existing
         }
         settings["hooks"] = hooks
@@ -522,7 +541,10 @@ final class HookServer: @unchecked Sendable {
         for key in hooks.keys {
             if var matchers = hooks[key] as? [[String: Any]] {
                 matchers.removeAll { matcher in
-                    (matcher["hooks"] as? [[String: Any]])?.contains { ($0["command"] as? String)?.contains("NotchBuddy") == true } ?? false
+                    (matcher["hooks"] as? [[String: Any]])?.contains {
+                        ($0["command"] as? String)?.contains("NotchBuddy") == true ||
+                        ($0["command"] as? String)?.contains("coucou") == true
+                    } ?? false
                 }
                 if matchers.isEmpty { hooks.removeValue(forKey: key) }
                 else { hooks[key] = matchers }
@@ -532,6 +554,97 @@ final class HookServer: @unchecked Sendable {
         let newData = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
         try newData.write(to: settingsURL, options: .atomic)
     }
+
+    // MARK: - App Store: hooks via security-scoped bookmark
+
+    #if APPSTORE
+    /// App Store variant — needs a security-scoped bookmark URL pointing to ~/.claude
+    func previewClaudeHooksAppStore(claudeURL: URL) throws -> String {
+        let accessing = claudeURL.startAccessingSecurityScopedResource()
+        defer { if accessing { claudeURL.stopAccessingSecurityScopedResource() } }
+        let data = try buildHooksData(claudeURL: claudeURL)
+        _pendingHooksData = data
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    func writeClaudeHooksAppStore(claudeURL: URL) throws {
+        guard let data = _pendingHooksData else { return }
+        let accessing = claudeURL.startAccessingSecurityScopedResource()
+        defer { if accessing { claudeURL.stopAccessingSecurityScopedResource() } }
+
+        // Write the nb-hook script into ~/.claude/coucou/nb-hook
+        let coucouDir = claudeURL.appendingPathComponent("coucou")
+        try FileManager.default.createDirectory(at: coucouDir, withIntermediateDirectories: true)
+        let scriptURL = coucouDir.appendingPathComponent("nb-hook")
+        try nbHookScriptAppStore.write(to: scriptURL, atomically: true, encoding: .utf8)
+        _ = try? FileManager.default.setAttributes([.posixPermissions: 0o755 as NSNumber], ofItemAtPath: scriptURL.path)
+
+        // Write settings.json (with backup)
+        let settingsURL = claudeURL.appendingPathComponent("settings.json")
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmm"
+        let backupURL = claudeURL.appendingPathComponent("settings.json.bak-\(formatter.string(from: Date()))")
+        try? FileManager.default.copyItem(at: settingsURL, to: backupURL)
+        try data.write(to: settingsURL, options: .atomic)
+        _pendingHooksData = nil
+    }
+
+    func uninstallClaudeHooksAppStore(claudeURL: URL) throws {
+        let accessing = claudeURL.startAccessingSecurityScopedResource()
+        defer { if accessing { claudeURL.stopAccessingSecurityScopedResource() } }
+        let settingsURL = claudeURL.appendingPathComponent("settings.json")
+        guard let data = try? Data(contentsOf: settingsURL),
+              var settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var hooks = settings["hooks"] as? [String: Any] else { return }
+        for key in hooks.keys {
+            if var matchers = hooks[key] as? [[String: Any]] {
+                matchers.removeAll { matcher in
+                    (matcher["hooks"] as? [[String: Any]])?.contains {
+                        ($0["command"] as? String)?.contains("coucou") == true ||
+                        ($0["command"] as? String)?.contains("NotchBuddy") == true
+                    } ?? false
+                }
+                if matchers.isEmpty { hooks.removeValue(forKey: key) }
+                else { hooks[key] = matchers }
+            }
+        }
+        settings["hooks"] = hooks
+        let newData = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+        try newData.write(to: settingsURL, options: .atomic)
+    }
+
+    private func buildHooksData(claudeURL: URL) throws -> Data {
+        let settingsURL = claudeURL.appendingPathComponent("settings.json")
+        var settings: [String: Any] = [:]
+        if let data = try? Data(contentsOf: settingsURL),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            settings = parsed
+        }
+        let hookPath = Self.hookScriptPath
+        let quotedCmd = "/bin/sh \"\(hookPath.replacingOccurrences(of: "\"", with: "\\\""))\""
+        let events: [(String, Int)] = [
+            ("SessionStart", 10), ("SessionEnd", 10),
+            ("UserPromptSubmit", 10),
+            ("PreToolUse", 10), ("PostToolUse", 10), ("PostToolUseFailure", 10),
+            ("PermissionRequest", 10),
+            ("Notification", 10),
+            ("Stop", 10), ("StopFailure", 10),
+            ("SubagentStart", 10), ("SubagentStop", 10),
+        ]
+        var hooks = settings["hooks"] as? [String: Any] ?? [:]
+        for (event, timeout) in events {
+            var existing = hooks[event] as? [[String: Any]] ?? []
+            existing.removeAll { ($0["hooks"] as? [[String: Any]])?.contains {
+                ($0["command"] as? String)?.contains("coucou") == true ||
+                ($0["command"] as? String)?.contains("NotchBuddy") == true
+            } ?? false }
+            existing.append(["hooks": [["type": "command", "command": quotedCmd, "timeout": timeout]]])
+            hooks[event] = existing
+        }
+        settings["hooks"] = hooks
+        return try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+    }
+    #endif
 }
 
 // MARK: - Notification names for hook server → controller communication
@@ -608,6 +721,75 @@ def main():
         s.close()
     except Exception:
         pass  # Always exit cleanly — never block Claude Code
+
+main()
+sys.exit(0)
+"""
+
+// MARK: - nb-hook script for App Store (socket in sandboxed container)
+
+private let nbHookScriptAppStore = """
+#!/usr/bin/env python3
+# nb-hook — Notch Buddy (App Store) hook relay for Claude Code
+import sys, json, os, socket
+
+def main():
+    try:
+        raw = sys.stdin.buffer.read()
+        if not raw:
+            return
+        payload = json.loads(raw)
+    except Exception:
+        return
+
+    env = os.environ
+    payload.setdefault('term_program', env.get('TERM_PROGRAM', ''))
+    payload.setdefault('iterm_session_id', env.get('ITERM_SESSION_ID', ''))
+    payload.setdefault('term_session_id', env.get('TERM_SESSION_ID', ''))
+    payload.setdefault('bundle_id', env.get('__CFBundleIdentifier', ''))
+    if 'cwd' not in payload or not payload['cwd']:
+        payload['cwd'] = os.getcwd()
+
+    event = payload.get('hook_event_name', '')
+    # App Store version: socket lives inside the sandboxed container
+    socket_path = os.path.expanduser(
+        '~/Library/Containers/app.example.Coucou/Data/Library/Application Support/NotchBuddy/nb.sock'
+    )
+
+    if event == 'PermissionRequest':
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(118)
+            s.connect(socket_path)
+            s.sendall((json.dumps(payload) + '\\n').encode())
+            chunks = []
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if b'\\n' in chunk:
+                    break
+            s.close()
+            response = b''.join(chunks).decode().strip()
+            if response and 'permissionDecision' in response:
+                sys.stdout.write(response + '\\n')
+                sys.stdout.flush()
+                sys.exit(0)
+        except Exception:
+            pass
+        sys.stdout.write('{"permissionDecision":"deny"}\\n')
+        sys.stdout.flush()
+        sys.exit(0)
+
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.3)
+        s.connect(socket_path)
+        s.sendall((json.dumps(payload) + '\\n').encode())
+        s.close()
+    except Exception:
+        pass
 
 main()
 sys.exit(0)

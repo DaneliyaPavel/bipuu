@@ -461,9 +461,11 @@ struct IslandHeader: View {
             HStack(spacing: 5) {
                 TabButton(icon: "house.fill", view: .overview, state: state)
                 TabButton(icon: "bubble.left.fill", view: .prompt, state: state, preAction: {
+                    #if !APPSTORE
                     if state.promptContext == nil {
                         state.promptContext = WindowContextCapture.captureActive(from: state.lastExternalApp)
                     }
+                    #endif
                 })
                 TabButton(icon: "plus", view: .upload, state: state)
             }

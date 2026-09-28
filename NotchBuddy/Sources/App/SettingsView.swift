@@ -9,6 +9,9 @@ struct SettingsView: View {
     @State private var statusMessage: String = ""
     @State private var showDiff: Bool = false
     @State private var pendingHookJSON: String = ""
+    #if APPSTORE
+    @State private var claudeAccessGranted: Bool = (UserDefaults.standard.data(forKey: "claudeDirectoryBookmark") != nil)
+    #endif
 
     // Integration keys
     @State private var resendKey: String    = KeychainStore.shared.get("resend-api-key")  ?? ""
@@ -60,18 +63,37 @@ struct SettingsView: View {
                 }
 
                 // MARK: Hooks
-                GroupBox("Hooks Claude Code") {
+                GroupBox("Claude Code Hooks") {
                     VStack(alignment: .leading, spacing: 10) {
+                        #if APPSTORE
+                        if claudeAccessGranted {
+                            Text("~/.claude/coucou/nb-hook")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                            HStack(spacing: 10) {
+                                Button("Install hooks") { installHooksAppStore() }
+                                    .buttonStyle(.borderedProminent)
+                                Button("Uninstall") { uninstallHooksAppStore() }
+                                    .buttonStyle(.bordered)
+                            }
+                        } else {
+                            Text("Choose your ~/.claude folder so Coucou can add its hooks.")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                            Button("Choose .claude folder…") { chooseClaudeFolder() }
+                                .buttonStyle(.borderedProminent)
+                        }
+                        #else
                         Text("nb-hook : \(HookServer.hookScriptPath)")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(.secondary)
-
                         HStack(spacing: 10) {
                             Button("Install hooks") { installHooks() }
                                 .buttonStyle(.borderedProminent)
                             Button("Uninstall") { uninstallHooks() }
                                 .buttonStyle(.bordered)
                         }
+                        #endif
 
                         if showDiff {
                             ScrollView {
@@ -84,8 +106,13 @@ struct SettingsView: View {
                             .cornerRadius(6)
 
                             HStack {
+                                #if APPSTORE
+                                Button("Confirm & write") { confirmInstallAppStore() }
+                                    .buttonStyle(.borderedProminent)
+                                #else
                                 Button("Confirm & write") { confirmInstall() }
                                     .buttonStyle(.borderedProminent)
+                                #endif
                                 Button("Cancel") { showDiff = false; pendingHookJSON = "" }
                                     .buttonStyle(.bordered)
                             }
@@ -325,6 +352,97 @@ struct SettingsView: View {
             launchAtStartup = !on
         }
     }
+
+    // MARK: - App Store: hooks via NSOpenPanel + security-scoped bookmark
+
+    #if APPSTORE
+    private func chooseClaudeFolder() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose your .claude folder so Coucou can add its hooks"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let data = try url.bookmarkData(
+                    options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+                UserDefaults.standard.set(data, forKey: "claudeDirectoryBookmark")
+                claudeAccessGranted = true
+                statusMessage = "✓ .claude folder access granted."
+            } catch {
+                statusMessage = "❌ Bookmark error: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func resolveClaudeBookmark() -> URL? {
+        guard let data = UserDefaults.standard.data(forKey: "claudeDirectoryBookmark") else { return nil }
+        var isStale = false
+        guard let url = try? URL(resolvingBookmarkData: data,
+                                  options: .withSecurityScope,
+                                  relativeTo: nil,
+                                  bookmarkDataIsStale: &isStale) else { return nil }
+        if isStale {
+            // Re-prompt user if bookmark is stale
+            claudeAccessGranted = false
+            UserDefaults.standard.removeObject(forKey: "claudeDirectoryBookmark")
+            return nil
+        }
+        return url
+    }
+
+    private func installHooksAppStore() {
+        guard let claudeURL = resolveClaudeBookmark() else {
+            claudeAccessGranted = false
+            statusMessage = "❌ .claude folder access lost — choose the folder again."
+            return
+        }
+        do {
+            let accessing = claudeURL.startAccessingSecurityScopedResource()
+            defer { if accessing { claudeURL.stopAccessingSecurityScopedResource() } }
+            pendingHookJSON = try HookServer.shared.previewClaudeHooksAppStore(claudeURL: claudeURL)
+            showDiff = true
+            statusMessage = "Review the JSON below before confirming."
+        } catch {
+            statusMessage = "❌ \(error.localizedDescription)"
+        }
+    }
+
+    private func confirmInstallAppStore() {
+        guard let claudeURL = resolveClaudeBookmark() else {
+            claudeAccessGranted = false
+            statusMessage = "❌ .claude folder access lost."
+            return
+        }
+        do {
+            try HookServer.shared.writeClaudeHooksAppStore(claudeURL: claudeURL)
+            showDiff = false
+            statusMessage = "✓ Hooks installed in ~/.claude/settings.json"
+            pendingHookJSON = ""
+        } catch {
+            statusMessage = "❌ Write error: \(error.localizedDescription)"
+        }
+    }
+
+    private func uninstallHooksAppStore() {
+        guard let claudeURL = resolveClaudeBookmark() else {
+            claudeAccessGranted = false
+            statusMessage = "❌ .claude folder access lost."
+            return
+        }
+        do {
+            try HookServer.shared.uninstallClaudeHooksAppStore(claudeURL: claudeURL)
+            statusMessage = "✓ Hooks removed."
+        } catch {
+            statusMessage = "❌ \(error.localizedDescription)"
+        }
+    }
+    #endif
 
     private func installHooks() {
         do {

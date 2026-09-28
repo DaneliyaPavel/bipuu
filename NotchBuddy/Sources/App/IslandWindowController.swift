@@ -419,12 +419,14 @@ final class IslandWindowController: NSWindowController {
                 self.attachDragStart = nil
                 self.state.stateOverride = nil
                 self.hideDragGhost()
+                #if !APPSTORE
                 if let ctx = self.windowContextAtPoint(mouse) {
                     self.state.promptContext = ctx
                     SoundEngine.shared.play("approve")
                     NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.happy)
                     self.expand(to: .prompt)
                 }
+                #endif
             }
         }
         NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
