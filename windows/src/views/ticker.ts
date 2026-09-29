@@ -1,12 +1,24 @@
 // Overview task ticker — port of TickerView (V2) from IslandViewContent.swift.
-// Three rows: completed (A), current → completed (B), incoming (C).
+//
+// Three rows: completed (A), current → completed (B), incoming (C). Every row
+// position is recomputed from a single clock in `tick()`, driven by the island's
+// frame loop — no CSS transitions and no timers. Chaining CSS transitions with a
+// reset timer let two rows land on the same line when steps arrived in bursts,
+// and any step that arrived mid-animation was dropped outright. Steps are now
+// queued instead, so a burst scrolls past rather than vanishing.
 
 import { h, svg } from "./dom";
 import { ICONS } from "./icons";
+import { cubicBezier, clamp, lerp } from "../core/anim";
 import type { AgentTask } from "../core/state";
 
-const COMPLETED_SCALE = 11.5 / 13; // 0.885
-const CURVE = "cubic-bezier(0.4, 0, 0.2, 1)";
+const ROW_H = 22;
+/** One step transition, milliseconds. */
+const DURATION = 380;
+/** Beyond this many queued steps we stop trying to show them all. */
+const MAX_QUEUE = 4;
+const COMPLETED_SCALE = 11.5 / 13; // 0.885 — the completed font size
+const EASE = cubicBezier(0.4, 0, 0.2, 1);
 
 interface Row {
   el: HTMLElement;
@@ -14,116 +26,131 @@ interface Row {
   check: SVGElement;
   shimmer: HTMLElement;
   dim: HTMLElement;
+  text: string;
 }
 
 function makeRow(): Row {
   const chevron = svg(ICONS.chevronRight, 9, { stroke: 2.4 });
   const check = svg(ICONS.check, 8, { stroke: 2.2 });
-  check.style.opacity = "0";
+  check.style.color = "#454850"; // the completed tick is dimmer than the chevron
+  check.style.position = "absolute";
+  chevron.style.position = "absolute";
   const shimmer = h("span", { class: "tick-text shimmer" });
   const dim = h("span", {
     class: "tick-text",
-    style: "position:absolute;left:0;right:0;color:#6b7079;opacity:0",
+    style: "position:absolute;left:0;right:0;color:#6b7079",
   });
-  const textWrap = h("span", { style: "position:relative;flex:1 1 auto;min-width:0" }, shimmer, dim);
   const el = h(
     "div",
     { class: "ticker-row" },
     h("span", { class: "tick-icon", style: "position:relative" }, chevron, check),
-    textWrap,
+    h("span", { style: "position:relative;flex:1 1 auto;min-width:0" }, shimmer, dim),
   );
-  return { el, chevron, check, shimmer, dim };
+  return { el, chevron, check, shimmer, dim, text: "" };
 }
 
 function setText(row: Row, text: string) {
+  if (row.text === text) return;
+  row.text = text;
   row.shimmer.textContent = text;
   row.dim.textContent = text;
 }
 
-/** phase 0 = current (shimmering, full size), 1 = completed (dim, shifted up-left). */
-function setPhase(row: Row, phase: number, y: number, durationMs: number) {
+/**
+ * Places a row. `phase` 0 = current (shimmering, full size), 1 = completed
+ * (dim, shifted up-left and scaled down) — same crossfades as the Swift view.
+ */
+function place(row: Row, y: number, phase: number, opacity: number) {
   const scale = 1 - phase * (1 - COMPLETED_SCALE);
-  const x = -phase * 10;
-  const t = durationMs > 0 ? `transform ${durationMs}ms ${CURVE}` : "none";
-  row.el.style.transition = t;
-  row.el.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
-
-  const half = durationMs / 2;
-  row.chevron.style.transition = durationMs > 0 ? `opacity ${half}ms linear` : "none";
-  row.chevron.style.opacity = phase >= 0.5 ? "0" : "1";
-  row.check.style.transition = durationMs > 0 ? `opacity ${half}ms linear ${half}ms` : "none";
-  row.check.style.opacity = phase >= 0.5 ? "1" : "0";
-  row.shimmer.style.transition =
-    durationMs > 0 ? `opacity ${Math.round(durationMs * 0.625)}ms linear` : "none";
-  row.shimmer.style.opacity = phase > 0.5 ? "0" : "1";
-  row.dim.style.transition =
-    durationMs > 0 ? `opacity ${half}ms linear ${Math.round(durationMs * 0.2)}ms` : "none";
-  row.dim.style.opacity = phase > 0.5 ? "1" : "0";
+  row.el.style.transform = `translate(${-phase * 10}px, ${y}px) scale(${scale})`;
+  row.el.style.opacity = String(opacity);
+  row.chevron.style.opacity = String(clamp(1 - phase * 2, 0, 1));
+  row.check.style.opacity = String(clamp(phase * 2 - 1, 0, 1));
+  row.shimmer.style.opacity = String(clamp(1 - phase * 1.6, 0, 1));
+  row.dim.style.opacity = String(clamp(phase * 2 - 0.4, 0, 1));
 }
 
 export class Ticker {
   readonly el: HTMLElement;
-  private a = makeRow();
-  private b = makeRow();
-  private c = makeRow();
+  private a = makeRow(); // completed
+  private b = makeRow(); // current
+  private c = makeRow(); // incoming
+  private queue: string[] = [];
+  private startMs: number | null = null;
   private displayIndex = -1;
-  private transitioning = false;
-  private resetTimer: number | null = null;
 
   constructor() {
     this.el = h("div", { class: "ticker" }, this.a.el, this.b.el, this.c.el);
-    this.reset();
+    this.rest();
   }
 
-  private reset() {
-    setPhase(this.a, 1, 0, 0);
-    this.a.el.style.opacity = "1";
-    this.a.el.style.transition = "none";
-    setPhase(this.b, 0, 22, 0);
-    setPhase(this.c, 0, 44, 0);
-    this.c.el.style.opacity = "0";
+  /** The state between transitions: completed on top, current below. */
+  private rest() {
+    place(this.a, 0, 1, 1);
+    place(this.b, ROW_H, 0, 1);
+    place(this.c, ROW_H * 2, 0, 0);
+  }
+
+  get animating(): boolean {
+    return this.startMs != null || this.queue.length > 0;
   }
 
   sync(task: AgentTask | null) {
     const steps = task && task.steps.length > 0 ? task.steps : ["…"];
-    const idx = task ? task.stepIndex : -1;
+    const idx = task ? Math.min(task.stepIndex, steps.length - 1) : -1;
 
+    // First render: drop straight into place, no animation.
     if (this.displayIndex < 0) {
       this.displayIndex = idx;
-      setText(this.a, idx > 0 ? steps[Math.max(0, idx - 1)] : "…");
-      setText(this.b, steps[Math.min(Math.max(idx, 0), steps.length - 1)]);
+      setText(this.a, idx > 0 ? steps[idx - 1] : "…");
+      setText(this.b, steps[Math.max(idx, 0)]);
+      this.rest();
       return;
     }
-    if (this.transitioning || idx === this.displayIndex) return;
-    this.animateTo(idx, steps);
+
+    // The session restarted (steps were cleared): re-seed rather than scroll.
+    if (idx < this.displayIndex) {
+      this.queue = [];
+      this.startMs = null;
+      this.displayIndex = idx;
+      setText(this.a, idx > 0 ? steps[idx - 1] : "…");
+      setText(this.b, steps[Math.max(idx, 0)]);
+      this.rest();
+      return;
+    }
+
+    for (let i = this.displayIndex + 1; i <= idx; i++) this.queue.push(steps[i]);
+    this.displayIndex = idx;
+    if (this.queue.length > MAX_QUEUE) {
+      this.queue = this.queue.slice(-MAX_QUEUE);
+    }
   }
 
-  private animateTo(newIdx: number, steps: string[]) {
-    this.transitioning = true;
-    setText(this.c, steps[Math.min(newIdx, steps.length - 1)]);
-    setPhase(this.c, 0, 44, 0);
-    this.c.el.style.opacity = "0";
+  /** Called every frame by the island while the overview is on screen. */
+  tick(nowMs: number) {
+    if (this.startMs == null) {
+      if (this.queue.length === 0) return;
+      setText(this.c, this.queue[0]);
+      place(this.c, ROW_H * 2, 0, 0);
+      this.startMs = nowMs;
+    }
 
-    // Force a layout flush so the transitions below actually run.
-    void this.c.el.offsetHeight;
+    const p = clamp((nowMs - this.startMs) / DURATION, 0, 1);
+    const e = EASE(p);
 
-    this.a.el.style.transition = "transform 280ms ease-out, opacity 280ms ease-out";
-    this.a.el.style.transform = `translate(-10px, -22px) scale(${COMPLETED_SCALE})`;
-    this.a.el.style.opacity = "0";
+    // A leaves upwards and fades a little faster than it moves, as on macOS.
+    place(this.a, lerp(0, -ROW_H, e), 1, clamp(1 - p * 1.35, 0, 1));
+    place(this.b, lerp(ROW_H, 0, e), e, 1);
+    place(this.c, lerp(ROW_H * 2, ROW_H, e), 0, e);
 
-    setPhase(this.b, 1, 0, 380);
+    if (p < 1) return;
 
-    this.c.el.style.transition = `transform 380ms ${CURVE}, opacity 380ms ${CURVE}`;
-    this.c.el.style.transform = "translate(0px, 22px) scale(1)";
-    this.c.el.style.opacity = "1";
-
-    if (this.resetTimer != null) window.clearTimeout(this.resetTimer);
-    this.resetTimer = window.setTimeout(() => {
-      this.displayIndex = newIdx;
-      setText(this.a, this.b.shimmer.textContent ?? "");
-      setText(this.b, this.c.shimmer.textContent ?? "");
-      this.reset();
-      this.transitioning = false;
-    }, 500);
+    // Commit: the current row becomes the completed one, the incoming row the
+    // current one. Texts move, elements stay put — no reordering, no overlap.
+    setText(this.a, this.b.text);
+    setText(this.b, this.c.text);
+    this.queue.shift();
+    this.startMs = null;
+    this.rest();
   }
 }

@@ -619,6 +619,7 @@ export class Island {
     }
 
     tickMiniBots(dt);
+    this.views.get(State.view)?.tick?.(nowMs);
     if (State.view === "uploading") this.stepUpload(nowMs);
     this.updateCountdown(nowMs);
 

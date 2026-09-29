@@ -430,16 +430,6 @@ body {
   text-overflow: ellipsis;
 }
 
-.ticker-row.done .tick-icon {
-  color: #454850;
-}
-
-.ticker-row.done .tick-text {
-  color: var(--dim-3);
-  background: none;
-  -webkit-text-fill-color: currentColor;
-}
-
 /* Shimmer sweep, 2.2 s — same as TickerShimmerText / ShimmeringText */
 .shimmer {
   background: linear-gradient(
