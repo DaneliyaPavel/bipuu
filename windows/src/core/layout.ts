@@ -88,6 +88,24 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
 
+/**
+ * Progress curve of the upload bar — `usProgressCurve` from
+ * UploadSequenceEngine.swift: quick to 60 %, an unhurried middle, then a last
+ * push. A plain ease-out reads as a different animation entirely.
+ */
+export function uploadProgressCurve(u: number): number {
+  const eOut = (t: number) => 1 - Math.pow(1 - t, 3);
+  const eIn = (t: number) => t * t * t;
+  const eInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+  if (u < 0.4) return 0.6 * eOut(u / 0.4);
+  if (u < 0.85) return 0.6 + 0.32 * eInOut((u - 0.4) / 0.45);
+  return 0.92 + 0.08 * eIn((u - 0.85) / 0.15);
+}
+
+/** While a file hovers the box, Mochi slides along under the cursor. */
+export const UPLOAD_FOLLOW_MIN = 60;
+export const UPLOAD_FOLLOW_MAX = 580;
+
 /** Chat view grows with the conversation — IslandContainer.chatPromptHeight. */
 export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);

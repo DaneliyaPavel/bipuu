@@ -91,6 +91,12 @@ export class IslandStateMachine {
     this.transition("home");
   }
 
+  /// Explicit close (OK button, Escape, an alert being answered).
+  forcePetit() {
+    this.cancelTimers();
+    this.transition("petit");
+  }
+
   forceHidden() {
     this.cancelTimers();
     this.transition("hidden");

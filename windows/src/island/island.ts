@@ -6,7 +6,8 @@ import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
-  islandSize, type IslandMode, type IslandViewName,
+  islandSize, uploadProgressCurve, UPLOAD_FOLLOW_MIN, UPLOAD_FOLLOW_MAX,
+  type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
@@ -269,8 +270,10 @@ export class Island {
   collapse() {
     State.isPinned = false;
     this.fsm.pinned = false;
-    if (this.fsm.state === "home") this.fsm.mouseLeft();
-    this.setMode("compact");
+    // Drive the state machine rather than the mode: setting the mode behind its
+    // back left it thinking the island was still open, and a click on the compact
+    // island then did nothing — the island could never be reopened.
+    this.fsm.forcePetit();
   }
 
   /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */
@@ -357,7 +360,7 @@ export class Island {
   private stepUpload(nowMs: number) {
     if (State.uploadStartMs == null) return;
     const t = Math.min(1, (nowMs - State.uploadStartMs) / 1000 / State.uploadDuration);
-    State.uploadProgress = t * (2 - t);
+    State.uploadProgress = uploadProgressCurve(t);
     const tick = Math.floor(State.uploadProgress * 10);
     if (tick !== this.lastTick && tick < 10) {
       this.lastTick = tick;
@@ -642,6 +645,17 @@ export class Island {
     this.botCx.target = p.cx;
     this.botCy.target = p.cy;
     this.botSize.target = p.diameter / 0.6;
+
+    // While uploading, Mochi *is* the bar's cursor: a spring would always trail
+    // the fill. Follow the progress exactly, like the macOS TimelineView does.
+    if (State.view === "uploading" && State.uploadStartMs != null) {
+      this.botCx.set(p.cx);
+    }
+
+    // With a file hovering the box, Mochi slides along under the cursor.
+    if (State.view === "upload" && State.fileDragOver) {
+      this.botCx.target = clamp(State.mouseInIsland.x, UPLOAD_FOLLOW_MIN, UPLOAD_FOLLOW_MAX);
+    }
 
     const greetingActive = State.mode === "expanded" && State.view === "greeting";
     const visible = p.opacity > 0 && !greetingActive;
