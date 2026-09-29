@@ -53,6 +53,9 @@ pub struct HookPreview {
     pub diff: String,
     pub backup: String,
     pub settings_path: String,
+    /// Identifies the bytes this diff was computed from; handed back to `write`
+    /// so we only ever apply what the user actually looked at.
+    pub fingerprint: String,
 }
 
 fn home() -> PathBuf {
@@ -65,11 +68,47 @@ pub fn settings_path() -> PathBuf {
     home().join(".claude").join("settings.json")
 }
 
-fn read_settings() -> Value {
-    match std::fs::read(settings_path()) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({})),
-        Err(_) => json!({}),
+/// Reads `~/.claude/settings.json`.
+///
+/// The only error that means "start from nothing" is the file not being there.
+/// Everything else — a lock held by another process, a permission problem, JSON
+/// we cannot parse — is reported, because the alternative is treating somebody's
+/// unreadable settings as an empty object and then writing that back over them.
+fn read_settings() -> Result<Value, String> {
+    let path = settings_path();
+    match std::fs::read(&path) {
+        Ok(bytes) => parse_settings(&bytes, &path.display().to_string()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
+        // A lock, a permission problem, a bad drive: all of them mean we do not
+        // know what is in there, and not knowing is not the same as empty.
+        Err(err) => Err(format!("Can't read {}: {err}", path.display())),
     }
+}
+
+/// The parsing half of `read_settings`, split out so it can be tested without a
+/// home directory.
+fn parse_settings(bytes: &[u8], path: &str) -> Result<Value, String> {
+    // PowerShell writes a UTF-8 BOM with `Set-Content -Encoding utf8`, and
+    // serde_json refuses it. Stripping it is safe and well defined; guessing at
+    // anything else is not.
+    let text = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    if text.iter().all(u8::is_ascii_whitespace) {
+        return Ok(json!({}));
+    }
+    match serde_json::from_slice::<Value>(text) {
+        Ok(v) if v.is_object() => Ok(v),
+        Ok(_) => Err(format!("{path} isn't a JSON object — Coucou won't touch it.")),
+        Err(err) => Err(format!(
+            "{path} isn't valid JSON ({err}). Fix or move it, then try again — Coucou won't overwrite it."
+        )),
+    }
+}
+
+/// The settings as they are, or an empty object when we cannot tell. Only for
+/// read-only paths like `status()`, which must never fail loudly; anything that
+/// writes uses `read_settings()` and surfaces the error instead.
+fn read_settings_lossy() -> Value {
+    read_settings().unwrap_or_else(|_| json!({}))
 }
 
 fn hook_command(event: &str) -> String {
@@ -155,11 +194,13 @@ fn pretty(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default()
 }
 
+/// Down to the second: installing then uninstalling in the same minute must not
+/// quietly overwrite the first backup.
 fn stamp() -> String {
     let t = unsafe { GetLocalTime() };
     format!(
-        "{:04}{:02}{:02}-{:02}{:02}",
-        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
     )
 }
 
@@ -168,10 +209,28 @@ fn backup_path() -> PathBuf {
     p.with_file_name(format!("settings.json.bak-{}", stamp()))
 }
 
+/// Identifies the exact bytes a preview was computed from. FNV-1a is plenty:
+/// the question is only "is this still the file I showed the user?".
+fn fingerprint(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn current_fingerprint() -> String {
+    match std::fs::read(settings_path()) {
+        Ok(bytes) => fingerprint(&bytes),
+        Err(_) => fingerprint(b""),
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 pub fn status() -> HookStatus {
-    let current = read_settings();
+    let current = read_settings_lossy();
     let installed = current
         .get("hooks")
         .and_then(Value::as_object)
@@ -192,23 +251,38 @@ pub fn status() -> HookStatus {
     }
 }
 
-pub fn preview(install: bool) -> HookPreview {
-    let current = read_settings();
+pub fn preview(install: bool) -> Result<HookPreview, String> {
+    let current = read_settings()?;
     let next = if install { merged(&current) } else { without_ours(&current) };
-    HookPreview {
+    Ok(HookPreview {
         diff: unified_diff(&pretty(&current), &pretty(&next)),
         backup: backup_path().to_string_lossy().to_string(),
         settings_path: settings_path().to_string_lossy().to_string(),
-    }
+        fingerprint: current_fingerprint(),
+    })
 }
 
 /// Writes the merged (or cleaned) settings after taking a dated backup.
-pub fn write(install: bool) -> Result<String, String> {
+///
+/// `fingerprint` is the one the preview was computed from. If the file changed
+/// in between — another tool, another window, the user's own editor — we stop
+/// and make them look at a fresh diff, because the only thing worse than not
+/// installing the hooks is silently reverting somebody else's edit.
+pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
     let path = settings_path();
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
 
-    let current = read_settings();
+    // Read before the backup: an unreadable file must abort before we touch
+    // anything at all.
+    let current = read_settings()?;
+    if current_fingerprint() != fingerprint {
+        return Err(format!(
+            "{} changed since the preview. Nothing was written — review the new diff.",
+            path.display()
+        ));
+    }
+
     let backup = backup_path();
     if path.exists() {
         std::fs::copy(&path, &backup).map_err(|e| format!("backup failed: {e}"))?;
@@ -217,13 +291,27 @@ pub fn write(install: bool) -> Result<String, String> {
     let next = if install { merged(&current) } else { without_ours(&current) };
     let mut text = pretty(&next);
     text.push('\n');
-    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+
+    // Write beside the target and rename over it: a crash or a full disk leaves
+    // the original settings.json intact rather than half a file.
+    let temp = path.with_extension(format!("json.coucou-{}", std::process::id()));
+    std::fs::write(&temp, text.as_bytes()).map_err(|e| format!("write failed: {e}"))?;
+    if let Err(err) = std::fs::rename(&temp, &path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("write failed: {err}"));
+    }
     Ok(backup.to_string_lossy().to_string())
 }
 
 /// Copies coucou-hook.exe into %LOCALAPPDATA%\Coucou\bin on launch.
 /// In a bundled install it comes from the app resources; in `tauri dev` it sits
 /// next to coucou.exe in the workspace target directory.
+///
+/// Every candidate is tried rather than just the first, because getting this
+/// wrong is silent and fatal: `resources` used to be a glob, which made NSIS
+/// mirror the source path into `_up_\target\release\`, no candidate matched, and
+/// the relay was simply never installed. It only looked healthy on a developer
+/// machine, where a leftover copy from `tauri dev` was already sitting in bin/.
 pub fn ensure_hook_exe(app: &AppHandle) {
     let dest = settings::hook_exe_path();
     let Some(dir) = dest.parent() else { return };
@@ -241,11 +329,17 @@ pub fn ensure_hook_exe(app: &AppHandle) {
             // release hook the pre-build step produces.
             candidates.push(parent.join("coucou-hook.exe"));
             candidates.push(parent.join("../release/coucou-hook.exe"));
+            // Belt and braces: where the old glob form used to land it.
+            candidates.push(parent.join("_up_/target/release/coucou-hook.exe"));
         }
     }
 
+    let tried: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
     let Some(src) = candidates.into_iter().find(|p| p.exists()) else {
-        eprintln!("[coucou] coucou-hook.exe not found — run `cargo build -p coucou-hook`");
+        crate::log::line(format!(
+            "coucou-hook.exe not found — Claude Code hooks cannot work. Looked in: {}",
+            tried.join(", ")
+        ));
         return;
     };
 
@@ -259,7 +353,9 @@ pub fn ensure_hook_exe(app: &AppHandle) {
     // A hook may be running right now and hold the file open; keeping the old
     // copy is fine, it is the same relay.
     if let Err(err) = std::fs::copy(&src, &dest) {
-        eprintln!("[coucou] could not refresh coucou-hook.exe: {err}");
+        if !dest.exists() {
+            crate::log::line(format!("could not install coucou-hook.exe: {err}"));
+        }
     }
 }
 
@@ -337,4 +433,133 @@ fn unified_diff(before: &str, after: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WHERE: &str = "settings.json";
+
+    #[test]
+    fn a_utf8_bom_is_stripped_not_treated_as_corruption() {
+        // PowerShell 5's `Set-Content -Encoding utf8` produces exactly this.
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(br#"{"model":"opus","hooks":{}}"#);
+        let parsed = parse_settings(&bytes, WHERE).expect("a BOM must not defeat the parser");
+        assert_eq!(parsed["model"], "opus");
+    }
+
+    #[test]
+    fn unreadable_content_is_an_error_never_an_empty_object() {
+        // This is the whole bug: returning {} here meant `merged()` produced a
+        // file containing nothing but Coucou's hooks, and the write replaced
+        // everything the user had.
+        for bad in [&b"{ not json"[..], &b"[1,2,3]"[..], &b"\"a string\""[..]] {
+            assert!(
+                parse_settings(bad, WHERE).is_err(),
+                "content we cannot use must refuse, not come back empty"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_and_whitespace_files_start_from_nothing() {
+        assert_eq!(parse_settings(b"", WHERE).unwrap(), json!({}));
+        assert_eq!(parse_settings(b"  
+	 ", WHERE).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn merging_keeps_every_other_setting_and_every_foreign_hook() {
+        let existing = serde_json::json!({
+            "model": "claude-opus-5",
+            "theme": "dark",
+            "enabledPlugins": ["a", "b"],
+            "hooks": {
+                "PreToolUse": [
+                    { "hooks": [{ "type": "command", "command": "someone-elses-tool.exe" }] }
+                ],
+                "SomeEventWeDoNotTouch": [
+                    { "hooks": [{ "type": "command", "command": "keep-me.exe" }] }
+                ]
+            }
+        });
+
+        let after = merged(&existing);
+        assert_eq!(after["model"], "claude-opus-5");
+        assert_eq!(after["theme"], "dark");
+        assert_eq!(after["enabledPlugins"], serde_json::json!(["a", "b"]));
+
+        let pre = after["hooks"]["PreToolUse"].as_array().unwrap();
+        assert!(
+            pre.iter().any(|e| serde_json::to_string(e).unwrap().contains("someone-elses-tool.exe")),
+            "another tool's hook was dropped"
+        );
+        assert!(pre.iter().any(entry_is_ours), "our own hook was not added");
+        assert!(after["hooks"]["SomeEventWeDoNotTouch"].is_array());
+
+        // And removing ours puts it back exactly as it was.
+        let cleaned = without_ours(&after);
+        assert_eq!(cleaned, existing);
+    }
+
+    #[test]
+    fn a_fingerprint_notices_any_change() {
+        assert_eq!(fingerprint(b"{}"), fingerprint(b"{}"));
+        assert_ne!(fingerprint(b"{}"), fingerprint(b"{ }"));
+        assert_ne!(fingerprint(b""), fingerprint(b"{}"));
+    }
+
+    /// Everything filesystem-shaped lives in one test on purpose: it points
+    /// USERPROFILE at a temp directory, and that is process-wide.
+    #[test]
+    fn writing_backs_up_preserves_and_refuses_a_changed_file() {
+        let tmp = std::env::temp_dir().join(format!("coucou-hooks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".claude")).unwrap();
+        std::env::set_var("USERPROFILE", &tmp);
+
+        let path = settings_path();
+        assert!(path.starts_with(&tmp), "the test must not touch the real home");
+
+        // A real-shaped file, written the way PowerShell 5 would: UTF-8 with BOM.
+        let original = r#"{"model":"claude-opus-5","theme":"dark","tui":{"x":1},"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"other-tool.exe"}]}]}}"#;
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(original.as_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+
+        // Install.
+        let plan = preview(true).expect("a BOM must not stop the preview");
+        assert!(plan.diff.contains("coucou-hook"), "the diff must show what changes");
+        let backup = write(true, &plan.fingerprint).expect("install should succeed");
+
+        // The backup holds the original bytes, BOM and all.
+        assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+
+        // Everything else survived, and so did the other tool's hook.
+        let after: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(after["model"], "claude-opus-5");
+        assert_eq!(after["theme"], "dark");
+        assert_eq!(after["tui"]["x"], 1);
+        let pre = after["hooks"]["PreToolUse"].as_array().unwrap();
+        assert!(pre.iter().any(|e| serde_json::to_string(e).unwrap().contains("other-tool.exe")));
+        assert!(status().installed);
+
+        // A file that moved since the preview is refused, and left alone.
+        let stale = preview(false).unwrap();
+        std::fs::write(&path, br#"{"model":"someone-else-edited-this"}"#).unwrap();
+        let err = write(false, &stale.fingerprint).unwrap_err();
+        assert!(err.contains("changed since the preview"), "got: {err}");
+        let untouched: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(untouched["model"], "someone-else-edited-this");
+
+        // Content we cannot parse is refused before anything is written.
+        std::fs::write(&path, b"{ broken").unwrap();
+        assert!(preview(true).is_err());
+        assert!(write(true, "whatever").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{ broken");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

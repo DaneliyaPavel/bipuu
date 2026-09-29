@@ -140,7 +140,6 @@ export class Island {
         if (!req) return;
         Sound.play(d === "deny" ? "blip" : "approve");
         void Bridge.approvalDecision(req.requestId, d);
-        if (d === "always") State.alwaysAllow = true;
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
@@ -711,16 +710,25 @@ export class Island {
     if (UploadSeq.isActive) this.stepSequence();
     this.updateCountdown(nowMs);
 
-    const busy =
-      this.width.animating || this.height.animating || this.radius.animating ||
-      !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-      greetingActive || this.engine.busy || State.mode !== "hidden" ||
-      UploadSeq.isActive;
+    // Nothing is drawn while the island is hidden, so nothing may keep the loop
+    // alive either. This used to read `... || this.engine.busy || State.mode !==
+    // "hidden"`, and engine.busy is permanently true for any state with a
+    // looping animation — breathing, ratelimit sweat, sleeping z's, the search
+    // sweep — so a hidden island went on burning frames in exactly the states it
+    // spends most of its life in. Geometry still has to finish retracting.
+    const settling =
+      this.width.animating || this.height.animating || this.radius.animating;
+    const busy = State.mode === "hidden"
+      ? settling
+      : settling ||
+        !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
+        greetingActive || this.engine.busy || UploadSeq.isActive;
 
     if (busy) {
       requestAnimationFrame(this.frame);
     } else {
       this.running = false;
+      Sound.idle();
     }
   };
 

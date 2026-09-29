@@ -25,18 +25,25 @@ async function main() {
 
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
 
+  /** Pause has to reach Rust too, or the pollers keep calling out. */
+  const setPaused = (on: boolean) => {
+    if (State.paused === on) return;
+    State.paused = on;
+    void Bridge.setPaused(on);
+  };
+
   await onEvent<string>("tray", (what) => {
     switch (what) {
       case "settings":
-        State.paused = false;
+        setPaused(false);
         island.alert("settings");
         break;
       case "open":
-        State.paused = false;
+        setPaused(false);
         island.alert(State.defaultView());
         break;
       case "pause":
-        State.paused = !State.paused;
+        setPaused(!State.paused);
         if (State.paused) island.fsm.forceHidden();
         else island.reveal();
         break;

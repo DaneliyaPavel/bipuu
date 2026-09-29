@@ -52,6 +52,12 @@ pub fn ingest(source: &str) -> Result<DroppedFile, String> {
     }
 
     std::fs::copy(src, &dest).map_err(|e| format!("cannot copy: {e}"))?;
+    // CopyFileEx carries the source's timestamps across, so a file last edited
+    // three years ago would arrive already older than the sweep window and be
+    // deleted on the spot. The inbox ages from when *we* copied it.
+    if let Ok(file) = std::fs::File::options().write(true).open(&dest) {
+        let _ = file.set_modified(SystemTime::now());
+    }
     sweep(&dir);
 
     Ok(DroppedFile {
@@ -61,13 +67,16 @@ pub fn ingest(source: &str) -> Result<DroppedFile, String> {
     })
 }
 
+/// Drops anything copied here more than a week ago. `ingest` stamps every copy
+/// with the time it landed, so this really is the age of the copy and not the
+/// age of whatever the user happened to drag in.
 fn sweep(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let now = SystemTime::now();
     for entry in entries.flatten() {
         let Ok(meta) = entry.metadata() else { continue };
-        let Ok(modified) = meta.modified() else { continue };
-        if now.duration_since(modified).map(|age| age > KEEP_FOR).unwrap_or(false) {
+        let Ok(copied) = meta.modified() else { continue };
+        if now.duration_since(copied).map(|age| age > KEEP_FOR).unwrap_or(false) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -97,6 +106,23 @@ mod tests {
 
         // Folders are refused rather than silently ignored.
         assert!(ingest(tmp.to_str().unwrap()).is_err());
+
+        // An ancient source must not arrive already older than the sweep window.
+        let old_source = tmp.join("ancient.txt");
+        std::fs::write(&old_source, b"old").unwrap();
+        let long_ago = SystemTime::now() - KEEP_FOR - Duration::from_secs(60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&old_source)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        let aged = ingest(old_source.to_str().unwrap()).unwrap();
+        assert!(
+            Path::new(&aged.path).exists(),
+            "a file copied just now was swept as if it were a week old"
+        );
+        let _ = std::fs::remove_file(&aged.path);
 
         let _ = std::fs::remove_file(&first.path);
         let _ = std::fs::remove_file(&second.path);

@@ -3,7 +3,7 @@
 // Difference from macOS: no terminal filter. On Windows the hook fires from any
 // terminal (Windows Terminal, VS Code, PowerShell…) and all of them are handled.
 
-import { onEvent } from "../core/bridge";
+import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import type { Island } from "./island";
@@ -19,6 +19,8 @@ interface HookPayload {
   session_id?: string;
   cwd?: string;
   message?: string;
+  /** UserPromptSubmit carries `prompt`; `message` belongs to Notification/Stop. */
+  prompt?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
 }
@@ -71,6 +73,34 @@ function stepLabel(tool: string, input: Record<string, unknown>): string {
   return label;
 }
 
+/**
+ * What the Allow button actually authorises. Approving "Write" tells you nothing
+ * — approving `Write · C:\…\.env` tells you everything, and the difference is
+ * the whole point of approving from the island rather than blind.
+ *
+ * Ordered by how specific the field is, so an unfamiliar tool still shows
+ * whatever identifying string it carries instead of falling back to its name.
+ */
+const APPROVAL_FIELDS = [
+  "command", // Bash, PowerShell
+  "file_path", // Write, Edit, MultiEdit, NotebookEdit
+  "path", // Read, LS
+  "url", // WebFetch
+  "query", // WebSearch
+  "pattern", // Glob, Grep
+  "prompt", // Task
+] as const;
+
+function approvalTarget(tool: string, input: Record<string, unknown>): string {
+  for (const field of APPROVAL_FIELDS) {
+    const value = input[field];
+    if (typeof value === "string" && value.trim()) {
+      return `${tool} · ${value.trim()}`;
+    }
+  }
+  return tool;
+}
+
 function upsert(projectName: string, cwd: string) {
   const t = State.tasks.find((x) => x.id === CLAUDE_ID);
   if (!t) return;
@@ -92,7 +122,13 @@ export function registerHookHandlers(island: Island) {
 }
 
 function handleHook(island: Island, payload: HookPayload) {
-  if (State.paused) return;
+  if (State.paused) {
+    // Silence here used to cost Claude Code nearly two minutes: the relay waited
+    // for a decision from an island that had already decided not to look. Say so,
+    // and the terminal takes the question immediately.
+    if (payload.request_id) void Bridge.approvalDecline(payload.request_id);
+    return;
+  }
 
   const name = payload.hook_event_name ?? "";
   const cwd = payload.cwd ?? "";
@@ -118,12 +154,15 @@ function handleHook(island: Island, payload: HookPayload) {
       Sound.play("work");
       break;
 
-    case "UserPromptSubmit":
+    case "UserPromptSubmit": {
       upsert(projectName, cwd);
       State.updateTask(CLAUDE_ID, "thinking");
-      if (payload.message) State.appendStep(CLAUDE_ID, payload.message.slice(0, 60));
+      // The field is `prompt`; reading `message` meant this step was always blank.
+      const asked = payload.prompt ?? payload.message;
+      if (asked) State.appendStep(CLAUDE_ID, asked.slice(0, 60));
       surface("overview", false);
       break;
+    }
 
     case "PreToolUse": {
       upsert(projectName, cwd);
@@ -189,22 +228,39 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
 
     case "PermissionRequest": {
+      const requestId = payload.request_id ?? "";
+      // One card, one request. A second one must never quietly replace the first
+      // — that would leave a human staring at request B while request A waits for
+      // a decision nobody can give. Hand it straight back to the terminal.
+      if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
+        if (requestId) void Bridge.approvalDecline(requestId);
+        break;
+      }
       upsert(projectName, cwd);
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
-      const command = typeof input.command === "string" ? input.command : tool;
       State.pendingApproval = {
-        requestId: payload.request_id ?? "",
+        requestId,
         sessionId: payload.session_id ?? "",
         tool,
-        command,
+        command: approvalTarget(tool, input),
       };
+      // The relay's short ack window closes in 800 ms; everything below this
+      // line is synchronous, so the card really is up by the time it lands.
+      if (requestId) void Bridge.approvalAck(requestId);
       State.updateTask(CLAUDE_ID, "approval");
       State.isPinned = true;
       Sound.play("approval");
-      if (focused) island.alert("approval");
-      else State.setPillBadge(CLAUDE_ID, "approval");
+      if (focused) {
+        island.alert("approval");
+      } else {
+        // Another agent holds the view, so the card would yank it away. The badge
+        // is the signal instead — but it has to be on screen for that to mean
+        // anything, hence the reveal. We just told the relay a human can act.
+        State.setPillBadge(CLAUDE_ID, "approval");
+        island.reveal();
+      }
       // Coucou answers within 108 s or not at all; after that the terminal has
       // taken over and the card would be lying.
       pendingTimeout = window.setTimeout(() => {

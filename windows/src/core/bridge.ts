@@ -63,12 +63,20 @@ export const Bridge = {
   // ── Claude Code hooks ─────────────────────────────────────────────────────
   hooksStatus: () => call<HookStatus>("hooks_status"),
   /** Diff to show before anything is written. `install: false` previews removal. */
-  hooksPreview: (install: boolean) => call<HookPreview>("hooks_preview", { install }),
-  /** Writes ~/.claude/settings.json — only ever after an explicit click. */
-  hooksApply: (install: boolean) => callOrThrow<string>("hooks_apply", { install }),
+  hooksPreview: (install: boolean) => callOrThrow<HookPreview>("hooks_preview", { install }),
+  /**
+   * Writes ~/.claude/settings.json — only ever after an explicit click, and only
+   * when the file still matches the preview the user looked at.
+   */
+  hooksApply: (install: boolean, fingerprint: string) =>
+    callOrThrow<string>("hooks_apply", { install, fingerprint }),
 
-  approvalDecision: (requestId: string, decision: "allow" | "deny" | "always") =>
+  approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
+  /** "The card is up" — until this lands the relay only waits a moment. */
+  approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
+  /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
+  approvalDecline: (requestId: string) => call<void>("approval_decline", { requestId }),
 
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */
@@ -86,6 +94,9 @@ export const Bridge = {
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
+
+  /** Tray → Pause. Stops the integration pollers, not just the island. */
+  setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
 };
 
 export interface IntegrationUpdate {
@@ -116,6 +127,8 @@ export interface HookPreview {
   diff: string;
   backup: string;
   settingsPath: string;
+  /** Hand back to hooksApply so only the reviewed diff is ever written. */
+  fingerprint: string;
 }
 
 /** Same as `call`, but surfaces the error so the UI can show what went wrong. */

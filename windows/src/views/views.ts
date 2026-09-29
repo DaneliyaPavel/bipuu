@@ -20,7 +20,7 @@ export interface ViewActions {
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
-  decide(d: "allow" | "deny" | "always"): void;
+  decide(d: "allow" | "deny"): void;
   toggleSound(): void;
   setVolume(v: number): void;
   setAutoClose(seconds: number): void;
@@ -293,26 +293,26 @@ function buildApproval(actions: ViewActions): ViewHost {
   const code = h("div", { class: "code" });
   const row = h("div", { class: "actions" });
   const el = h("div", { class: "view" }, card("amber", stack(116, 16, who, code, row)));
-  // The buttons are only rebuilt when they actually change: replacing them between
-  // a mouse-down and a mouse-up would swallow the click.
   let rowKey = "";
   return {
     el,
     sync() {
       clear(who);
       who.append(agentWho(State.focusTask, "needs permission"));
+      // The whole point of approving here rather than in the terminal: this line
+      // is the command, the file path or the URL being authorised, not just the
+      // name of the tool asking.
       code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
-      const key = String(State.alwaysAllow);
-      if (key === rowKey) return;
-      rowKey = key;
+      // Two buttons, built once. Rebuilding them between a mouse-down and a
+      // mouse-up would swallow the click, and there is nothing left to vary:
+      // "Always" is gone until the remembered-rules list exists to back it.
+      if (rowKey === "built") return;
+      rowKey = "built";
       clear(row);
       row.append(
         btn("Deny", "secondary", () => actions.decide("deny"), "N"),
         btn("Allow", "primary", () => actions.decide("allow"), "Y"),
       );
-      if (!State.alwaysAllow) {
-        row.append(btn("Always", "secondary", () => actions.decide("always")));
-      }
     },
   };
 }
