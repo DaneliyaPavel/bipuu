@@ -8,6 +8,8 @@ import { Ticker } from "./ticker";
 import { State, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
+import { buildPrompt } from "./chat";
+import { buildChoose, buildUpload, buildUploading } from "./upload";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
@@ -26,6 +28,8 @@ export interface ViewActions {
 export interface ViewHost {
   el: HTMLElement;
   sync(): void;
+  /** Called when the view becomes active, for views with a text field. */
+  focus?(): void;
 }
 
 // ── Shared pieces ─────────────────────────────────────────────────────────────
@@ -415,7 +419,10 @@ function buildPlaceholder(title: string, sub: string): ViewHost {
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 
-export function buildViews(actions: ViewActions): Map<IslandViewName, ViewHost> {
+export function buildViews(
+  actions: ViewActions,
+  onChatHeightChange: () => void,
+): Map<IslandViewName, ViewHost> {
   const map = new Map<IslandViewName, ViewHost>();
   map.set("overview", buildOverview(actions));
   map.set("empty", buildEmpty(actions));
@@ -426,11 +433,12 @@ export function buildViews(actions: ViewActions): Map<IslandViewName, ViewHost> 
   map.set("confused", buildConfused());
   map.set("note", buildNote());
   map.set("settings", buildSettings(actions));
-  map.set("prompt", buildPlaceholder("Chat is coming next.", "Ask Claude straight from the island."));
-  map.set("upload", buildPlaceholder("Drop your files here", "PDF · Images · Code · Docs"));
-  map.set("uploading", buildPlaceholder("Uploading…", ""));
-  map.set("choose", buildPlaceholder("File is ready.", "What do you want to do with it?"));
-  map.set("mail", buildPlaceholder("New email", ""));
+  map.set("prompt", buildPrompt(onChatHeightChange));
+  map.set("upload", buildUpload());
+  map.set("uploading", buildUploading());
+  map.set("choose", buildChoose(actions));
+  // Not in the Windows v1: sending a file by email, window attach + web result.
+  map.set("mail", buildPlaceholder("Sending by email isn't in this version.", ""));
   map.set("searching", buildPlaceholder("Claude is searching…", ""));
   map.set("result", buildPlaceholder("Result", ""));
   return map;

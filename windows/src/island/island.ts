@@ -2,7 +2,7 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring, clamp } from "../core/anim";
-import { Bridge, IS_TAURI } from "../core/bridge";
+import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
@@ -72,6 +72,8 @@ export class Island {
 
   private confusedRecovery: number | null = null;
   private prevViewBeforeConfused: IslandViewName = "overview";
+  private lastSyncedView: IslandViewName | null = null;
+  private lastTick = -1;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -147,7 +149,7 @@ export class Island {
     this.countdown = h("div", { id: "countdown" });
 
     this.header = buildHeader(actions);
-    this.views = buildViews(actions);
+    this.views = buildViews(actions, () => this.animateGeometry(false));
     this.viewsEl = h("div", { id: "views" });
     for (const v of this.views.values()) this.viewsEl.append(v.el);
     this.contentEl = h("div", { id: "content" }, this.header.el, this.viewsEl);
@@ -271,6 +273,91 @@ export class Island {
     this.fsm.pinned = false;
   }
 
+  // ── File drop ───────────────────────────────────────────────────────────────
+
+  private onDragDrop(e: { type: string; paths?: string[] }) {
+    if (State.paused) return;
+    switch (e.type) {
+      case "enter":
+      case "over": {
+        if (State.fileDragOver) return;
+        State.fileDragOver = true;
+        this.engine.animateMorph(1);
+        this.alert("upload");
+        break;
+      }
+      case "leave": {
+        if (!State.fileDragOver) return;
+        State.fileDragOver = false;
+        this.engine.animateMorph(0);
+        if (State.view === "upload") this.setView(State.defaultView());
+        State.notify();
+        break;
+      }
+      case "drop": {
+        State.fileDragOver = false;
+        const path = e.paths?.[0];
+        if (!path) {
+          this.engine.animateMorph(0);
+          this.setView(State.defaultView());
+          return;
+        }
+        void this.swallow(path);
+        break;
+      }
+    }
+  }
+
+  /** Mochi eats the file, then the progress bar runs and `choose` appears. */
+  private async swallow(path: string) {
+    try {
+      const file = await Bridge.ingestFile(path);
+      State.droppedFile = { name: file.name, path: file.path };
+      State.chatHistory = [];
+      void Bridge.chatReset();
+    } catch (err) {
+      State.noteMessage = String(err).replace(/^Error:\s*/, "");
+      this.engine.animateMorph(0);
+      this.setView("note");
+      Sound.play("error");
+      window.setTimeout(() => this.setView(State.defaultView()), 2400);
+      return;
+    }
+
+    this.engine.gulp();
+    Sound.play("gulp");
+    this.engine.triggerEmote("happy");
+    window.setTimeout(() => this.engine.animateMorph(0), 950);
+
+    State.uploadProgress = 0;
+    State.uploadStartMs = performance.now();
+    this.lastTick = -1;
+    this.setView("uploading");
+    this.ensureRunning();
+  }
+
+  /** Time-based progress, `tick` every 10 %, then `choose`. */
+  private stepUpload(nowMs: number) {
+    if (State.uploadStartMs == null) return;
+    const t = Math.min(1, (nowMs - State.uploadStartMs) / 1000 / State.uploadDuration);
+    State.uploadProgress = t * (2 - t);
+    const tick = Math.floor(State.uploadProgress * 10);
+    if (tick !== this.lastTick && tick < 10) {
+      this.lastTick = tick;
+      Sound.play("tick");
+    }
+    this.views.get("uploading")?.sync();
+    if (t >= 1) {
+      State.uploadStartMs = null;
+      State.uploadProgress = 1;
+      this.views.get("uploading")?.sync();
+      Sound.play("approve");
+      window.setTimeout(() => {
+        if (State.view === "uploading") this.setView("choose");
+      }, 600);
+    }
+  }
+
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
@@ -371,6 +458,8 @@ export class Island {
       if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
       State.lastActivity = performance.now();
     });
+
+    void onDragDrop((e) => this.onDragDrop(e));
 
     // Outside Tauri (plain browser) drive the cursor from DOM events so the
     // island can be inspected with `npm run dev`.
@@ -514,12 +603,14 @@ export class Island {
     }
 
     tickMiniBots(dt);
+    if (State.view === "uploading") this.stepUpload(nowMs);
     this.updateCountdown(nowMs);
 
     const busy =
       this.width.animating || this.height.animating || this.radius.animating ||
       !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-      greetingActive || this.engine.busy || State.mode !== "hidden";
+      greetingActive || this.engine.busy || State.mode !== "hidden" ||
+      State.uploadStartMs != null;
 
     if (busy) {
       requestAnimationFrame(this.frame);
@@ -629,6 +720,19 @@ export class Island {
       const on = name === State.view;
       view.el.classList.toggle("on", on);
       if (on) view.sync();
+    }
+
+    // The chat is the only view with a text field, so it is the only time the
+    // island is allowed to take keyboard focus.
+    if (this.lastSyncedView !== State.view) {
+      const wasChat = this.lastSyncedView === "prompt";
+      this.lastSyncedView = State.view;
+      if (State.view === "prompt") {
+        void Bridge.focusWindow(true);
+        window.setTimeout(() => this.views.get("prompt")?.focus?.(), 120);
+      } else if (wasChat) {
+        void Bridge.focusWindow(false);
+      }
     }
 
     // Compact mini grid

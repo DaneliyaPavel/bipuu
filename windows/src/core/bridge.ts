@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
 
 export const IS_TAURI =
@@ -68,7 +69,29 @@ export const Bridge = {
 
   approvalDecision: (requestId: string, decision: "allow" | "deny" | "always") =>
     call<void>("approval_decision", { requestId, decision }),
+
+  // ── Chat, files, secrets ──────────────────────────────────────────────────
+  /** One chat turn. The API key and any file bytes never leave Rust. */
+  chatSend: (query: string, context: ChatContext | null) =>
+    callOrThrow<{ text: string }>("chat_send", { query, context }),
+  chatReset: () => call<void>("chat_reset"),
+  /** Copies a dropped file into the inbox. */
+  ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
+  /** Only ever tells you whether a key exists — never its value. */
+  secretPresent: (key: string) => call<boolean>("secret_present", { key }),
+  secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),
+  secretClear: (key: string) => callOrThrow<void>("secret_clear", { key }),
 };
+
+export type ChatContext =
+  | { kind: "file"; name: string; path: string }
+  | { kind: "window"; appName: string; title: string; url?: string };
+
+export interface DroppedFile {
+  name: string;
+  path: string;
+  size: number;
+}
 
 export interface HookStatus {
   installed: boolean;
@@ -94,6 +117,19 @@ export type BridgeEvent =
   | { name: "tray"; payload: string }
   | { name: "hook"; payload: Record<string, unknown> }
   | { name: "screen-changed"; payload: null };
+
+export interface DragDropPayload {
+  type: "enter" | "over" | "drop" | "leave";
+  paths?: string[];
+}
+
+/** Files dragged onto the island. Only reaches us when the window takes the mouse. */
+export async function onDragDrop(handler: (e: DragDropPayload) => void) {
+  if (!IS_TAURI) return () => {};
+  return getCurrentWebview().onDragDropEvent((event) => {
+    handler(event.payload as DragDropPayload);
+  });
+}
 
 export async function onEvent<T>(name: string, handler: (payload: T) => void) {
   if (!IS_TAURI) return () => {};

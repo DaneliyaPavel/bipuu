@@ -16,6 +16,14 @@ pub struct Settings {
     pub screen: String,
     pub autostart: bool,
     pub hooks_installed: bool,
+    /// Claude model used by the chat. Changeable in the settings window.
+    /// Defaulted explicitly so a settings.json written by an older build still loads.
+    #[serde(default = "default_model")]
+    pub model: String,
+}
+
+fn default_model() -> String {
+    crate::claude::DEFAULT_MODEL.to_string()
 }
 
 impl Default for Settings {
@@ -34,6 +42,7 @@ impl Default for Settings {
             screen: "primary".into(),
             autostart: false,
             hooks_installed: false,
+            model: default_model(),
         }
     }
 }

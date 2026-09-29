@@ -75,7 +75,9 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   finished: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   confused: { height: 160, botX: 76, botY: null, botDiameter: 66, agentMode: "column" },
   upload: { height: 176, botX: 140, botY: 104, botDiameter: 62, agentMode: "column" },
-  uploading: { height: 176, botX: 46, botY: 118, botDiameter: 20, agentMode: "none" },
+  // botY 103 = bar top (42 + 58) + 3, so the dot really rides the bar. The Swift
+  // layout says 118 while its own comment says 103; the comment matches the spec.
+  uploading: { height: 176, botX: 46, botY: 103, botDiameter: 20, agentMode: "none" },
   choose: { height: 176, botX: 60, botY: 101, botDiameter: 52, agentMode: "column" },
   mail: { height: 240, botX: 56, botY: null, botDiameter: 46, agentMode: "column" },
   prompt: { height: 160, botX: 52, botY: null, botDiameter: 44, agentMode: "column" },

@@ -82,6 +82,8 @@ export interface Settings {
   screen: "primary" | "cursor";
   autostart: boolean;
   hooksInstalled: boolean;
+  /** Claude model used by the chat. */
+  model: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -95,6 +97,7 @@ export const DEFAULT_SETTINGS: Settings = {
   screen: "primary",
   autostart: false,
   hooksInstalled: false,
+  model: "claude-opus-5",
 };
 
 type Listener = () => void;

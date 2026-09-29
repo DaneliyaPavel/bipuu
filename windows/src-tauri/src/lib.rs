@@ -1,9 +1,12 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
+mod claude;
+mod files;
 mod hooks;
 mod island;
 mod log;
 mod pipe;
+mod secrets;
 mod settings;
 mod tray;
 
@@ -16,6 +19,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
+use claude::{Chat, ChatContext, ChatReply};
+use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
 use island::{PollGate, ScreenInfo};
 use pipe::Pending;
@@ -189,6 +194,47 @@ fn approval_decision(app: AppHandle, request_id: String, decision: String) {
     pipe::answer(&app, &request_id, &decision);
 }
 
+// ── Chat, files and secrets ───────────────────────────────────────────────────
+
+/// One chat turn. The API key and any file bytes stay on the Rust side.
+#[tauri::command]
+async fn chat_send(
+    shared: State<'_, Shared>,
+    chat: State<'_, Chat>,
+    query: String,
+    context: Option<ChatContext>,
+) -> Result<ChatReply, String> {
+    let model = shared.settings.lock().unwrap().model.clone();
+    claude::send(&chat, &model, query, context).await
+}
+
+#[tauri::command]
+fn chat_reset(chat: State<Chat>) {
+    chat.reset();
+}
+
+/// Copies a dropped file into the inbox and reports its name back.
+#[tauri::command]
+fn ingest_file(path: String) -> Result<DroppedFile, String> {
+    files::ingest(&path)
+}
+
+/// The island may only ask whether a key exists — never read it.
+#[tauri::command]
+fn secret_present(key: String) -> bool {
+    secrets::present(&key)
+}
+
+#[tauri::command]
+fn secret_set(key: String, value: String) -> Result<(), String> {
+    secrets::set(&key, &value)
+}
+
+#[tauri::command]
+fn secret_clear(key: String) -> Result<(), String> {
+    secrets::clear(&key)
+}
+
 /// Lets the island write to the same log as the Rust side.
 #[tauri::command]
 fn log_line(message: String) {
@@ -235,6 +281,7 @@ pub fn run() {
             gate: gate.clone(),
         })
         .manage(Pending::default())
+        .manage(Chat::default())
         .invoke_handler(tauri::generate_handler![
             boot,
             save_settings,
@@ -250,6 +297,12 @@ pub fn run() {
             hooks_apply,
             approval_decision,
             log_line,
+            chat_send,
+            chat_reset,
+            ingest_file,
+            secret_present,
+            secret_set,
+            secret_clear,
             open_settings_window,
         ])
         .setup(move |app| {
