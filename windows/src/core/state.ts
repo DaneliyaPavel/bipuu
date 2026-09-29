@@ -128,7 +128,6 @@ class AppState {
   paused = false;
 
   uploadProgress = 0;
-  uploadStartMs: number | null = null;
   uploadDuration = 2.4;
   fileDragOver = false;
 

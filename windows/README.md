@@ -97,6 +97,11 @@ npm run tauri dev      # live-reloading development build
 npm run pack           # builds the installer and drops it in windows/release/
 ```
 
+`npm run dev` alone serves the front end in an ordinary browser, which is enough
+to work on the island's looks. It also serves `dev/upload-preview.html`, which
+replays the whole file-drop choreography on a loop — the one part of the UI that
+otherwise needs a real drag from Explorer to see. Neither page ships in the app.
+
 `npm run pack` leaves two files in `windows/release/`, the same names the release
 workflow publishes:
 
