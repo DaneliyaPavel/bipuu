@@ -38,7 +38,8 @@ then this is what an unsigned installer looks like on Windows, and you can alway
 
 ## Using it
 
-<img src="screenshots/compact.png" width="308" alt="The compact island">
+<img src="screenshots/compact.png" width="292" alt="The compact island, with the integration pills as mini Mochis">
+<img src="screenshots/overview.png" width="640" alt="The overview: the focused integration on the left, the other pills on the right">
 <img src="screenshots/approval.png" width="640" alt="A Claude Code permission request, with Deny, Allow and Always">
 <img src="screenshots/chat.png" width="640" alt="Chatting with Claude from the island">
 <img src="screenshots/drop.png" width="640" alt="Mochi turned into a box, waiting for a file">

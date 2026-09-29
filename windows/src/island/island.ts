@@ -406,8 +406,8 @@ export class Island {
     this.islandEl.style.transform = `translateX(-50%)`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
-    this.miniGrid.style.left = `${w - 40 - 14}px`;
-    this.miniGrid.style.top = `${hh / 2 - 14}px`;
+    this.miniGrid.style.left = `${w - 40 - 14.5}px`;
+    this.miniGrid.style.top = `${hh / 2 - 14.5}px`;
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
 
     const rect = { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
@@ -761,7 +761,7 @@ export class Island {
         this.miniGrid.dataset.key = key;
         this.miniGrid.replaceChildren();
         for (const t of others) {
-          this.miniGrid.append(createMiniBot(t, 12));
+          this.miniGrid.append(createMiniBot(t, 13));
         }
         pruneMiniBots();
       }

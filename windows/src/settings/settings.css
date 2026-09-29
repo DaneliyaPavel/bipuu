@@ -1,6 +1,10 @@
 /* Settings window — same palette as the island, laid out as a normal window. */
 
 :root {
+  /* Makes Windows render the native dropdown and scrollbars dark — without it
+     the <select> popup is white text on white. */
+  color-scheme: dark;
+
   --font: system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif;
   --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
   --ink: #f5f6f8;
@@ -189,6 +193,8 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 input[type="number"],
+input[type="text"],
+input[type="password"],
 select {
   font: 400 12.5px var(--font);
   background: rgba(255, 255, 255, 0.07);
@@ -196,6 +202,23 @@ select {
   border-radius: 8px;
   color: var(--ink);
   padding: 5px 8px;
+}
+
+input::placeholder {
+  color: var(--dim-2);
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+/* The popup is drawn by the OS: give it an explicit pair of colours rather than
+   inheriting white on white. */
+select option {
+  background-color: #1a1c20;
+  color: var(--ink);
 }
 
 .diff {
