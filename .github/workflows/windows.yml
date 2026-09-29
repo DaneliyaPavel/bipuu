@@ -80,10 +80,15 @@ jobs:
           code-signed yet, so Windows SmartScreen shows a warning: click
           **More info → Run anyway**.
           "@
+          # --latest=false is not cosmetic: without it GitHub hands "Latest" to
+          # whichever release was published last, and the site's Download for Mac
+          # button points at /releases/latest. A Windows tag would silently send
+          # Mac users to the .exe. The macOS `v*` releases own that slot.
           gh release create "${{ github.ref_name }}" `
             "release/Coucou-Windows-$v-setup.exe" `
             --title "Coucou for Windows $v" `
-            --notes $notes
+            --notes $notes `
+            --latest=false
 
       - name: Update the rolling windows-latest release
         if: startsWith(github.ref, 'refs/tags/windows-v')
