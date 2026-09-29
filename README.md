@@ -9,6 +9,7 @@
 Approve permissions, answer questions, watch your agents work, drop a file, chat with Claude — all without leaving what you're doing.
 
 ![macOS 15+](https://img.shields.io/badge/macOS-15%2B-black?logo=apple)
+![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
 ![SwiftUI](https://img.shields.io/badge/SwiftUI-native-0A84FF)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
@@ -53,15 +54,25 @@ Meet **Mochi**: a soft little squircle with big eyes that pops out of your notch
 
 ## Install
 
-### Download
+### Download for macOS
 
 1. Grab the latest `Coucou.zip` from [Releases](https://github.com/Louis-CFM/coucou/releases).
 2. Unzip and move **Coucou.app** to `/Applications`.
 3. Launch — no extra steps needed.
 
+### Download for Windows
+
+1. Grab [`Coucou-Windows-setup.exe`](https://github.com/Louis-CFM/coucou/releases/download/windows-latest/Coucou-Windows-setup.exe) — always the newest Windows build.
+2. Run it. The installer isn't code-signed yet, so SmartScreen warns about it: click **More info → Run anyway**. It installs for your user only and asks for no administrator rights.
+3. Launch — Mochi appears at the top of your main screen.
+
+There is no notch on a PC, so the island slides out of the top edge of the screen
+instead of hiding inside one. See [`windows/README.md`](windows/README.md) for the
+rest of the differences.
+
 ### Build from source
 
-Requirements: macOS 15+, Xcode 16+, [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+**macOS** — requirements: macOS 15+, Xcode 16+, [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ```bash
 brew install xcodegen
@@ -69,6 +80,15 @@ git clone https://github.com/Louis-CFM/coucou.git
 cd coucou/NotchBuddy
 xcodegen
 open NotchBuddy.xcodeproj   # then ⌘R
+```
+
+**Windows** — requirements: [Rust](https://rustup.rs), Node 20+, MSVC build tools.
+
+```powershell
+git clone https://github.com/Louis-CFM/coucou.git
+cd coucou/windows
+npm install
+npm run pack                # installer lands in windows/release/
 ```
 
 ## Setup
