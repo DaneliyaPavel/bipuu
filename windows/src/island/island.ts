@@ -292,6 +292,7 @@ export class Island {
   // ── File drop ───────────────────────────────────────────────────────────────
 
   private onDragDrop(e: { type: string; paths?: string[] }) {
+    if (e.type !== "over") void Bridge.log(`drag ${e.type} ${e.paths?.length ?? 0} file(s)`);
     if (State.paused) return;
     switch (e.type) {
       case "enter":

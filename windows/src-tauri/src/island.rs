@@ -13,6 +13,11 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 use windows::Win32::Foundation::{HWND, POINT};
+use windows::core::BOOL;
+use windows::Win32::Foundation::LPARAM;
+use windows::Win32::System::Ole::RevokeDragDrop;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetClassNameW};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW,
@@ -113,6 +118,45 @@ fn cursor_physical() -> Option<(f64, f64)> {
     let mut p = POINT::default();
     unsafe { GetCursorPos(&mut p).ok()? };
     Some((p.x as f64, p.y as f64))
+}
+
+/// Lets dropped files reach the app again.
+///
+/// wry installs its drop target by walking the webview's child windows **once**,
+/// when the webview is created. WebView2 creates `Chrome_RenderWidgetHostHWND`
+/// later and registers its own target on it; being the innermost window, that one
+/// wins, and since the page has no HTML5 drop handler it refuses everything — the
+/// "no drop" cursor, with nothing reaching Tauri. Revoking it makes OLE fall
+/// through to the target wry registered on the parent widget, which is the one
+/// that feeds Tauri's drag events.
+///
+/// Cheap and idempotent, so it is simply re-run whenever a drag might be starting.
+pub fn unblock_webview_drops(app: &AppHandle) {
+    for label in [WINDOW_LABEL, "settings"] {
+        let Some(win) = app.get_webview_window(label) else { continue };
+        let Some(hwnd) = hwnd_of(&win) else { continue };
+        unsafe {
+            let _ = EnumChildWindows(Some(hwnd), Some(revoke_render_widget), LPARAM(0));
+        }
+    }
+}
+
+unsafe extern "system" fn revoke_render_widget(hwnd: HWND, _: LPARAM) -> BOOL {
+    let mut name = [0u16; 64];
+    let len = unsafe { GetClassNameW(hwnd, &mut name) };
+    if len > 0 {
+        let class = String::from_utf16_lossy(&name[..len as usize]);
+        if class == "Chrome_RenderWidgetHostHWND" {
+            let _ = unsafe { RevokeDragDrop(hwnd) };
+        }
+    }
+    true.into()
+}
+
+/// True while the left mouse button is held — the only signal we get that a
+/// drag might be in flight before it reaches the window.
+fn left_button_down() -> bool {
+    unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }
 }
 
 fn monitor_contains(m: &Monitor, x: f64, y: f64) -> bool {
@@ -217,6 +261,7 @@ pub fn set_activating(win: &WebviewWindow, activating: bool) {
 /// visible. Parked on a condvar the rest of the time.
 pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
     std::thread::spawn(move || {
+        let mut was_down = false;
         loop {
             gate.wait_until_active();
             let mut last = (f64::MIN, f64::MIN);
@@ -228,6 +273,10 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 let Some((cx, cy)) = cursor_physical() else { continue };
                 let x = (cx - origin.x as f64) / scale;
                 let y = (cy - origin.y as f64) / scale;
+                let size = match win.inner_size() {
+                    Ok(s) => (s.width as f64 / scale, s.height as f64 / scale),
+                    Err(_) => (PANEL_W, PANEL_H),
+                };
                 if (x - last.0).abs() < 1.0 && (y - last.1).abs() < 1.0 {
                     continue;
                 }
@@ -237,14 +286,38 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 // shape. A small entry margin means the flag is already off by the
                 // time a moving cursor reaches a button.
                 let r = *gate.rect.lock().unwrap();
-                let inside = r.w > 0.0
+                let on_island = r.w > 0.0
                     && x >= r.x - HIT_MARGIN
                     && x <= r.x + r.w + HIT_MARGIN
                     && y >= r.y - HIT_MARGIN
                     && y <= r.y + r.h + HIT_MARGIN;
-                if gate.ignoring.load(Ordering::Relaxed) == inside {
-                    gate.ignoring.store(!inside, Ordering::Relaxed);
-                    let _ = win.set_ignore_cursor_events(!inside);
+
+                // A file being dragged has to be able to find us. WS_EX_TRANSPARENT
+                // — what click-through is on Windows — hides the window from
+                // WindowFromPoint, so OLE finds no drop target and shows the "no
+                // drop" cursor. macOS has no such problem: AppKit delivers drags to
+                // registered destinations whatever ignoresMouseEvents says. So while
+                // a button is held anywhere over the panel, the whole panel takes
+                // the mouse, which also makes the drop zone as forgiving as the Mac's.
+                // A press may be the start of a drag: make sure the drop target is
+                // ours before the file arrives.
+                let down = left_button_down();
+                if down && !was_down {
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || unblock_webview_drops(&handle));
+                }
+                was_down = down;
+
+                let dragging = down
+                    && x >= 0.0
+                    && x <= size.0
+                    && y >= 0.0
+                    && y <= size.1;
+
+                let accept = on_island || dragging;
+                if gate.ignoring.load(Ordering::Relaxed) == accept {
+                    gate.ignoring.store(!accept, Ordering::Relaxed);
+                    let _ = win.set_ignore_cursor_events(!accept);
                 }
 
                 let _ = win.emit("cursor", CursorPayload { x, y });
