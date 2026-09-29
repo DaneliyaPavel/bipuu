@@ -10,12 +10,15 @@ import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
+import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
   collapse(): void;
   setFocus(id: string): void;
   openTerminal(): void;
+  /** The ↗ button: opens whatever the focused pill points at. */
+  openTarget(): void;
   openUrl(url: string): void;
   decide(d: "allow" | "deny" | "always"): void;
   toggleSound(): void;
@@ -114,12 +117,14 @@ export function buildHeader(actions: ViewActions): ViewHost {
 function buildOverview(actions: ViewActions): ViewHost {
   const ticker = new Ticker();
   const who = h("div", { class: "who" });
+  const tickerBody = h("div", { class: "card-body" }, who, ticker.el);
+  const leftBody = h("div", { class: "left-body" });
   const jump = h(
     "button",
-    { class: "icon-btn jump", title: "Open", onclick: () => actions.openTerminal() },
+    { class: "icon-btn jump", title: "Open", onclick: () => actions.openTarget() },
     svg(ICONS.arrowUpRight, 8),
   );
-  const left = card(null, h("div", { class: "card-body" }, who, ticker.el), jump);
+  const left = card(null, leftBody, jump);
   const pills = h("div", { class: "pills" });
   const right = card(null, pills);
 
@@ -129,16 +134,55 @@ function buildOverview(actions: ViewActions): ViewHost {
   );
 
   let pillIds = "";
+  let detailOpen = false;
+  let lastFocus: string | null = null;
+  let mode: "ticker" | "card" | null = null;
+  let cardKey = "";
+
+  const hooks: IntegrationCardHooks = {
+    get detailOpen() {
+      return detailOpen;
+    },
+    openDetail() {
+      detailOpen = true;
+      cardKey = "";
+      State.notify();
+    },
+    closeDetail() {
+      detailOpen = false;
+      cardKey = "";
+      State.notify();
+    },
+    openSettings: () => actions.openSettingsWindow(),
+  };
 
   return {
     el,
     sync() {
       const task = State.focusTask;
-      clear(who);
-      if (task) {
+      if (task?.id !== lastFocus) {
+        lastFocus = task?.id ?? null;
+        detailOpen = false;
+        cardKey = "";
+        mode = null;
+      }
+
+      // VS Code with a live Claude Code session keeps the ticker; every other
+      // pill shows its own card, exactly like IntegrationCardView.
+      const sessionActive =
+        task?.id === "integration_claude" && (task.state !== "idle" || task.steps.length > 0);
+
+      if (task && sessionActive) {
+        if (mode !== "ticker") {
+          clear(leftBody);
+          leftBody.append(tickerBody);
+          mode = "ticker";
+          cardKey = "";
+        }
+        clear(who);
         who.append(
           dot(task.color, 7),
-          h("span", { class: "name", text: task.id === "integration_claude" ? task.name : task.name }),
+          h("span", { class: "name", text: task.name }),
           h("span", { class: "tool", text: task.source === "claudeCode" ? "Claude Code" : "n8n" }),
         );
         if (task.steps.length > 1) {
@@ -147,13 +191,28 @@ function buildOverview(actions: ViewActions): ViewHost {
             text: `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`,
           }));
         }
+        ticker.sync(task);
+      } else if (task) {
+        const info = State.integrations[task.id];
+        const key = [
+          task.id, detailOpen, task.state, task.steps.join("|"),
+          info?.loaded, info?.error, info?.configured,
+          JSON.stringify(info?.data ?? {}),
+        ].join("~");
+        if (key !== cardKey) {
+          cardKey = key;
+          mode = "card";
+          clear(leftBody);
+          leftBody.append(renderIntegrationCard(task, hooks));
+        }
       }
-      ticker.sync(task);
+
+      jump.style.display = detailOpen ? "none" : "";
 
       const others = State.otherTasks.slice(0, 4);
-      const key = others.map((t) => `${t.id}:${t.pillBadge ?? ""}`).join("|");
-      if (key !== pillIds) {
-        pillIds = key;
+      const pillKey = others.map((t) => `${t.id}:${t.pillBadge ?? ""}`).join("|");
+      if (pillKey !== pillIds) {
+        pillIds = pillKey;
         clear(pills);
         for (const t of others) pills.append(buildPill(t, actions));
         pruneMiniBots();

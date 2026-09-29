@@ -73,6 +73,14 @@ export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_notion", "integration_calcom", "integration_stripe",
 ];
 
+/** What an integration poller last reported. */
+export interface IntegrationInfo {
+  data: Record<string, unknown>;
+  error: string | null;
+  loaded: boolean;
+  configured: boolean;
+}
+
 export interface Settings {
   soundEnabled: boolean;
   soundVolume: number;
@@ -131,6 +139,8 @@ class AppState {
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
   alwaysAllow = false;
+
+  integrations: Record<string, IntegrationInfo> = {};
 
   lastActivity = performance.now();
 

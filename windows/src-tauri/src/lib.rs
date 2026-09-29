@@ -3,6 +3,7 @@
 mod claude;
 mod files;
 mod hooks;
+mod integrations;
 mod island;
 mod log;
 mod pipe;
@@ -235,6 +236,20 @@ fn secret_clear(key: String) -> Result<(), String> {
     secrets::clear(&key)
 }
 
+/// Opens the configured n8n instance — the URL lives in the Credential Manager.
+#[tauri::command]
+fn open_n8n() {
+    if let Some(url) = secrets::get("n8n-url") {
+        open_url(url);
+    }
+}
+
+/// Refresh buttons in the integration cards.
+#[tauri::command]
+async fn refresh_integration(app: AppHandle, id: String) {
+    integrations::poll_once(app, &id).await;
+}
+
 /// Lets the island write to the same log as the Rust side.
 #[tauri::command]
 fn log_line(message: String) {
@@ -243,23 +258,63 @@ fn log_line(message: String) {
 
 // ── Settings window ───────────────────────────────────────────────────────────
 
-pub fn show_settings_window(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("settings") {
-        let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
-        return;
+/// WebView2 allows exactly one browser environment per app, and its options are
+/// fixed by whichever webview is created first. Every window must therefore ask
+/// for the *same* arguments as the island (see `additionalBrowserArgs` in
+/// tauri.conf.json) — a mismatch makes the second window come up blank, with no
+/// error anywhere.
+const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required";
+
+/// In a dev build the pages are served by Vite, so the second window needs the
+/// absolute dev URL; a bundled build resolves it inside the app bundle.
+fn settings_page_url(app: &AppHandle) -> WebviewUrl {
+    #[cfg(dev)]
+    if let Some(mut base) = app.config().build.dev_url.clone() {
+        base.set_path("/settings.html");
+        return WebviewUrl::External(base);
     }
-    if let Err(err) = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+    let _ = app;
+    WebviewUrl::App("settings.html".into())
+}
+
+/// The settings window is created hidden at launch and only ever shown and
+/// hidden afterwards. A WebView2 window created later — on the main thread or
+/// not — silently comes up blank in this app, so the window that works is the
+/// one that exists before the island's webview does.
+fn create_settings_window(app: &AppHandle) {
+    let url = settings_page_url(app);
+    match WebviewWindowBuilder::new(app, "settings", url)
+        .additional_browser_args(BROWSER_ARGS)
         .title("Settings — Coucou")
         .inner_size(560.0, 680.0)
         .min_inner_size(460.0, 480.0)
         .resizable(true)
+        .visible(false)
         .center()
         .build()
     {
-        log::line(format!("settings window failed: {err}"));
+        Ok(win) => {
+            // Closing it must only hide it, or it could never be reopened.
+            let hidden = win.clone();
+            win.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = hidden.hide();
+                }
+            });
+        }
+        Err(err) => log::line(format!("settings window failed: {err}")),
     }
+}
+
+pub fn show_settings_window(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("settings") else {
+        log::line("settings window missing");
+        return;
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_focus();
 }
 
 #[tauri::command]
@@ -303,11 +358,15 @@ pub fn run() {
             secret_present,
             secret_set,
             secret_clear,
+            refresh_integration,
+            open_n8n,
             open_settings_window,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
             tray::build(&handle)?;
+            // Before the island: see create_settings_window.
+            create_settings_window(&handle);
 
             if let Some(win) = island::window(&handle) {
                 island::make_non_activating(&win);
@@ -321,6 +380,7 @@ pub fn run() {
             log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
+            integrations::start(handle.clone());
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -6,6 +6,7 @@ import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
+import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
 
 async function main() {
   const root = document.getElementById("root");
@@ -48,9 +49,12 @@ async function main() {
   await onEvent<Settings>("settings-changed", (s) => {
     State.settings = { ...State.settings, ...s };
     island.applySettings();
+    State.loadIntegrationTasks();
+    void refreshConfigured();
   });
 
   registerHookHandlers(island);
+  registerIntegrationHandlers(island);
 
   island.launch();
 

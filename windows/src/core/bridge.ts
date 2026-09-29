@@ -81,7 +81,19 @@ export const Bridge = {
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
   secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),
   secretClear: (key: string) => callOrThrow<void>("secret_clear", { key }),
+
+  // ── Integrations ──────────────────────────────────────────────────────────
+  refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
+  /** Opens the configured n8n instance in the browser. */
+  openN8n: () => call<void>("open_n8n"),
 };
+
+export interface IntegrationUpdate {
+  id: string;
+  data: Record<string, unknown>;
+  error: string | null;
+  event: { success: boolean; label: string; detail: string | null } | null;
+}
 
 export type ChatContext =
   | { kind: "file"; name: string; path: string }

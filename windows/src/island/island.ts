@@ -102,6 +102,22 @@ export class Island {
         const cwd = State.focusTask?.sessionCwd ?? null;
         void Bridge.openInVSCode(cwd);
       },
+      // The ↗ button — same targets as openAgentTarget() on macOS.
+      openTarget: () => {
+        const task = State.focusTask;
+        if (!task) return;
+        const urls: Record<string, string> = {
+          integration_resend: "https://resend.com/emails",
+          integration_vercel: "https://vercel.com/dashboard",
+          integration_github: "https://github.com",
+          integration_stripe: "https://dashboard.stripe.com/payments",
+          integration_notion: "https://notion.so",
+          integration_calcom: "https://app.cal.com/bookings",
+        };
+        if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
+        else if (task.id === "integration_n8n") void Bridge.openN8n();
+        else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
+      },
       openUrl: (url) => {
         if (url) void Bridge.openUrl(url);
       },
