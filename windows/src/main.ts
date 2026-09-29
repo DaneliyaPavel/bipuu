@@ -1,0 +1,58 @@
+// Entry point: boot the bridge, wire the island, start the greeting.
+
+import "./style.css";
+import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
+import { Sound } from "./core/sound";
+import { State } from "./core/state";
+import { Island } from "./island/island";
+import { registerHookHandlers } from "./island/hooks";
+
+async function main() {
+  const root = document.getElementById("root");
+  if (!root) return;
+
+  void Sound.preload();
+
+  const island = new Island(root);
+
+  const boot = await Bridge.boot();
+  if (boot) {
+    State.settings = { ...State.settings, ...boot.settings };
+  }
+  island.applySettings();
+  State.loadIntegrationTasks();
+
+  await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
+
+  await onEvent<string>("tray", (what) => {
+    switch (what) {
+      case "settings":
+        State.paused = false;
+        island.alert("settings");
+        break;
+      case "open":
+        State.paused = false;
+        island.alert(State.defaultView());
+        break;
+      case "pause":
+        State.paused = !State.paused;
+        if (State.paused) island.fsm.forceHidden();
+        else island.reveal();
+        break;
+    }
+  });
+
+  await onEvent<null>("screen-changed", () => void Bridge.reposition());
+
+  registerHookHandlers(island);
+
+  island.launch();
+
+  // In a plain browser there is no wake strip behind the cursor: make the whole
+  // page wake the island so the visuals can be checked with `npm run dev`.
+  if (!IS_TAURI) {
+    document.addEventListener("click", () => Sound.resume(), { once: true });
+  }
+}
+
+void main();
