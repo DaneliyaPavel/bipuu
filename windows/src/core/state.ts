@@ -137,7 +137,6 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
-  alwaysAllow = false;
 
   integrations: Record<string, IntegrationInfo> = {};
 

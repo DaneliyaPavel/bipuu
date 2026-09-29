@@ -8,12 +8,13 @@
 // Nothing is polled until its key exists in the Credential Manager, and no
 // request goes anywhere the user has not configured.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::island::WINDOW_LABEL;
 use crate::log;
@@ -51,18 +52,36 @@ fn client() -> reqwest::Client {
         .unwrap_or_default()
 }
 
-/// Spawns every poller with the macOS delays and intervals.
-pub fn start(app: AppHandle) {
-    spawn(app.clone(), 3, 15, poll_n8n);
-    spawn(app.clone(), 5, 30, poll_vercel);
-    spawn(app.clone(), 6, 30, poll_stripe);
-    spawn(app.clone(), 6, 60, poll_resend);
-    spawn(app.clone(), 7, 300, poll_github);
-    spawn(app.clone(), 8, 300, poll_calcom);
-    spawn(app, 9, 300, poll_notion);
+/// Set from the tray's Pause item. While it is on, nothing reaches the network:
+/// pausing Coucou has to mean pausing Coucou, not just hiding the island.
+pub static PAUSED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_paused(on: bool) {
+    PAUSED.store(on, Ordering::Relaxed);
 }
 
-fn spawn<F, Fut>(app: AppHandle, delay_secs: u64, every_secs: u64, poll: F)
+/// Spawns every poller with the macOS delays and intervals.
+pub fn start(app: AppHandle) {
+    spawn(app.clone(), "integration_n8n", 3, 15, poll_n8n);
+    spawn(app.clone(), "integration_vercel", 5, 30, poll_vercel);
+    spawn(app.clone(), "integration_stripe", 6, 30, poll_stripe);
+    spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
+    spawn(app.clone(), "integration_github", 7, 300, poll_github);
+    spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
+    spawn(app, "integration_notion", 9, 300, poll_notion);
+}
+
+/// True when the user has this integration switched on in settings.
+fn enabled(app: &AppHandle, id: &str) -> bool {
+    app.try_state::<crate::Shared>()
+        .map(|shared| {
+            let settings = shared.settings.lock().unwrap();
+            settings.active_integrations.iter().any(|x| x == id)
+        })
+        .unwrap_or(false)
+}
+
+fn spawn<F, Fut>(app: AppHandle, id: &'static str, delay_secs: u64, every_secs: u64, poll: F)
 where
     F: Fn(AppHandle) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
@@ -72,6 +91,13 @@ where
         let mut ticker = tokio::time::interval(Duration::from_secs(every_secs));
         loop {
             ticker.tick().await;
+            // The ticker keeps its cadence; we just decline to do the work. An
+            // integration the user switched off, or a paused app, must make no
+            // network calls at all — CLAUDE.md allows talking only to services
+            // the user configured, and a disabled one is not configured.
+            if PAUSED.load(Ordering::Relaxed) || !enabled(&app, id) {
+                continue;
+            }
             poll(app.clone()).await;
         }
     });
@@ -601,7 +627,8 @@ async fn poll_n8n(app: AppHandle) {
             continue;
         };
         if !response.status().is_success() {
-            log::line(format!("n8n list HTTP {} on {url}", response.status()));
+            // Only the status: a self-hosted base URL can carry credentials.
+            log::line(format!("n8n list HTTP {}", response.status()));
             continue;
         }
         let Ok(json) = response.json::<Value>().await else { continue };

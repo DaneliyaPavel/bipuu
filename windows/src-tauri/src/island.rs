@@ -257,16 +257,51 @@ pub fn set_activating(win: &WebviewWindow, activating: bool) {
     }
 }
 
+/// Position, size and scale of the monitor the island lives on. Any change here
+/// means the island has to be placed again.
+fn current_screen_key(app: &AppHandle) -> Option<(i32, i32, u32, u32, u64)> {
+    let pref = app
+        .try_state::<crate::Shared>()
+        .map(|s| s.settings.lock().unwrap().screen.clone())
+        .unwrap_or_else(|| "primary".into());
+    let m = target_monitor(app, &pref)?;
+    let p = m.position();
+    let size = m.size();
+    Some((p.x, p.y, size.width, size.height, m.scale_factor().to_bits()))
+}
+
 /// Emits `cursor` (window-logical coordinates) at ~60 Hz while the island is
 /// visible. Parked on a condvar the rest of the time.
 pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
     std::thread::spawn(move || {
         let mut was_down = false;
+        // Remembered across wakes so a display change while hidden is noticed the
+        // moment the island comes back.
+        let mut last_screen: Option<(i32, i32, u32, u32, u64)> = None;
         loop {
             gate.wait_until_active();
             let mut last = (f64::MIN, f64::MIN);
+            let mut ticks: u32 = 0;
             while gate.is_active() {
                 std::thread::sleep(Duration::from_millis(16));
+
+                // Monitors get plugged in, unplugged, rearranged and rescaled, and
+                // an island pinned to coordinates that no longer exist is an island
+                // nobody can reach. Checked about twice a second — the cursor poll
+                // is already running, so this costs one monitor query.
+                ticks = ticks.wrapping_add(1);
+                if ticks % 30 == 0 {
+                    let now = current_screen_key(&app);
+                    if now.is_some() && now != last_screen {
+                        let first = last_screen.is_none();
+                        last_screen = now;
+                        if !first {
+                            crate::log::line("display layout changed — repositioning".to_string());
+                            let _ = app.emit_to(WINDOW_LABEL, "screen-changed", ());
+                        }
+                    }
+                }
+
                 let Some(win) = window(&app) else { continue };
                 let Ok(origin) = win.outer_position() else { continue };
                 let scale = win.scale_factor().unwrap_or(1.0);

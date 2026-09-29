@@ -20,6 +20,7 @@ class SoundEngine {
   private master: GainNode | null = null;
   private buffers = new Map<string, AudioBuffer>();
   private loading: Promise<void> | null = null;
+  private idleTimer: number | null = null;
 
   /** Creates the context and decodes every WAV. Safe to call more than once. */
   preload(): Promise<void> {
@@ -51,7 +52,27 @@ class SoundEngine {
 
   /** WebView2 can hand us a suspended context; call after any user input. */
   resume() {
+    if (this.idleTimer != null) {
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     void this.ctx?.resume();
+  }
+
+  /**
+   * Called when the island goes quiet. A running AudioContext keeps an audio
+   * thread and its render quantum alive even with nothing playing, which shows
+   * up as a steady trickle of CPU on a machine that is supposed to be idle.
+   *
+   * The delay covers the tail of whatever just played — suspending mid-sound
+   * would clip it — and `play()` resumes the context on its own.
+   */
+  idle() {
+    if (!this.ctx || this.ctx.state !== "running" || this.idleTimer != null) return;
+    this.idleTimer = window.setTimeout(() => {
+      this.idleTimer = null;
+      void this.ctx?.suspend();
+    }, 1500);
   }
 
   setVolume(v: number) {
@@ -69,6 +90,10 @@ class SoundEngine {
     const master = this.master;
     const buf = this.buffers.get(name);
     if (!ctx || !master || !buf) return;
+    if (this.idleTimer != null) {
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     if (ctx.state === "suspended") void ctx.resume();
     const src = ctx.createBufferSource();
     src.buffer = buf;

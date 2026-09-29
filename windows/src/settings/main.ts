@@ -94,6 +94,12 @@ function claudeSection(status: HookStatus): HTMLElement {
       text: status.installed ? "Reinstall hooks…" : "Install hooks…",
       onclick: () => showPreview(true),
     });
+    // Writing hook commands that point at a relay which isn't there would give
+    // every Claude Code session a broken hook and nothing to show for it.
+    if (!status.hookReady) {
+      install.disabled = true;
+      install.title = "The relay isn't installed yet.";
+    }
     actions.append(install);
     if (status.installed) {
       actions.append(h("button", {
@@ -106,7 +112,22 @@ function claudeSection(status: HookStatus): HTMLElement {
   }
 
   async function showPreview(install: boolean) {
-    const preview = await Bridge.hooksPreview(install);
+    let preview;
+    try {
+      preview = await Bridge.hooksPreview(install);
+    } catch (err) {
+      // An unreadable or invalid settings.json stops here rather than being
+      // treated as empty and written over.
+      clear(body);
+      body.append(
+        h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }),
+        h("div", { class: "row" }, h("button", {
+          text: "Back",
+          onclick: () => { clear(body); draw(); },
+        })),
+      );
+      return;
+    }
     if (!preview) return;
     clear(body);
     body.append(
@@ -128,7 +149,7 @@ function claudeSection(status: HookStatus): HTMLElement {
     confirm.addEventListener("click", async () => {
       confirm.disabled = true;
       try {
-        const backup = await Bridge.hooksApply(install);
+        const backup = await Bridge.hooksApply(install, preview.fingerprint);
         clear(body);
         body.append(h("div", {
           class: "notice ok",

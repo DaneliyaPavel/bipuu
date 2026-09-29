@@ -10,6 +10,7 @@ mod pipe;
 mod secrets;
 mod settings;
 mod tray;
+mod win_user;
 
 use std::os::windows::process::CommandExt;
 use std::process::Command;
@@ -135,16 +136,12 @@ fn open_url(url: String) {
 /// and falls back to Explorer otherwise.
 #[tauri::command]
 fn open_in_vscode(path: Option<String>) -> bool {
-    let has_code = Command::new("cmd")
-        .args(["/C", "where", "code"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if has_code {
-        let mut cmd = Command::new("cmd");
-        cmd.arg("/C").arg("code");
+    // No `cmd /C` anywhere near this. The path is a project folder chosen by
+    // whoever is using Claude Code, and cmd would happily read `&`, `^` and `%`
+    // in a folder name as syntax. Finding the launcher ourselves and handing the
+    // path over as a separate argument keeps it a path.
+    if let Some(code) = find_on_path("code") {
+        let mut cmd = Command::new(code);
         if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
             cmd.arg(p);
         }
@@ -158,9 +155,33 @@ fn open_in_vscode(path: Option<String>) -> bool {
     false
 }
 
+/// Our own `where`: walks %PATH% against %PATHEXT%, no shell involved.
+/// Rust quotes arguments correctly for `.cmd`/`.bat` targets since 1.77, so
+/// spawning `code.cmd` directly is safe.
+fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let dirs = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&dirs) {
+        for ext in exts.split(';').filter(|e| !e.is_empty()) {
+            let candidate = dir.join(format!("{stem}{}", ext.to_lowercase()));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+/// Tray → Pause. Paused means paused: the pollers stop talking to the network,
+/// not just the island stopping showing things.
+#[tauri::command]
+fn set_paused(paused: bool) {
+    integrations::set_paused(paused);
 }
 
 // ── Claude Code hooks ─────────────────────────────────────────────────────────
@@ -172,14 +193,21 @@ fn hooks_status() -> HookStatus {
 
 /// Returns the diff the user has to look at before anything is written.
 #[tauri::command]
-fn hooks_preview(install: bool) -> HookPreview {
+fn hooks_preview(install: bool) -> Result<HookPreview, String> {
     hooks::preview(install)
 }
 
 /// Only ever called from an explicit click in the settings window.
 #[tauri::command]
-fn hooks_apply(app: AppHandle, shared: State<Shared>, install: bool) -> Result<String, String> {
-    let backup = hooks::write(install)?;
+fn hooks_apply(
+    app: AppHandle,
+    shared: State<Shared>,
+    install: bool,
+    fingerprint: String,
+) -> Result<String, String> {
+    // The fingerprint comes from the preview the user actually looked at, so a
+    // settings.json that changed in between is refused rather than overwritten.
+    let backup = hooks::write(install, &fingerprint)?;
     let updated = {
         let mut current = shared.settings.lock().unwrap();
         current.hooks_installed = install;
@@ -193,6 +221,21 @@ fn hooks_apply(app: AppHandle, shared: State<Shared>, install: bool) -> Result<S
 #[tauri::command]
 fn approval_decision(app: AppHandle, request_id: String, decision: String) {
     pipe::answer(&app, &request_id, &decision);
+}
+
+/// The island has the card on screen, so the long wait for a human may begin.
+/// Until this arrives the relay only waits a few hundred milliseconds, which is
+/// what stops a paused or unresponsive island from freezing Claude Code.
+#[tauri::command]
+fn approval_ack(app: AppHandle, request_id: String) {
+    pipe::acknowledge(&app, &request_id);
+}
+
+/// Nobody can act on this request — the island is paused, or another card is
+/// already up. Claude Code falls back to asking in the terminal immediately.
+#[tauri::command]
+fn approval_decline(app: AppHandle, request_id: String) {
+    pipe::decline(&app, &request_id);
 }
 
 // ── Chat, files and secrets ───────────────────────────────────────────────────
@@ -351,6 +394,8 @@ pub fn run() {
             hooks_preview,
             hooks_apply,
             approval_decision,
+            approval_ack,
+            approval_decline,
             log_line,
             chat_send,
             chat_reset,
@@ -361,6 +406,7 @@ pub fn run() {
             refresh_integration,
             open_n8n,
             open_settings_window,
+            set_paused,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
