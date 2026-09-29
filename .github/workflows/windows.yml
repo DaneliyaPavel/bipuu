@@ -1,0 +1,104 @@
+name: Windows
+
+# Builds the Windows app and publishes the installer.
+# Triggered by tags like `windows-v0.1.0`; the macOS workflows are untouched.
+
+on:
+  push:
+    tags:
+      - 'windows-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            windows/target
+          key: windows-cargo-${{ hashFiles('windows/Cargo.lock') }}
+          restore-keys: windows-cargo-
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `npm run build` (run by tauri as beforeBuildCommand) builds coucou-hook
+      # first, which tauri.conf.json then bundles as a resource.
+      - name: Build the installer
+        run: npm run tauri build
+
+      - name: Name the installer
+        id: pack
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^windows-v', ''
+          if (-not $version) { $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version }
+          $built = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $built) { throw "no NSIS installer was produced" }
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item $built "out/Coucou-Windows-$version-setup.exe"
+          Copy-Item $built "out/Coucou-Windows-setup.exe"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Get-ChildItem out | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Coucou-Windows-setup
+          path: windows/out/Coucou-Windows-${{ steps.pack.outputs.version }}-setup.exe
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/windows-v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.pack.outputs.version }}"
+          $notes = @"
+          Coucou for Windows $v — Mochi at the top of your screen.
+
+          Download ``Coucou-Windows-$v-setup.exe`` and run it. The installer is not
+          code-signed yet, so Windows SmartScreen shows a warning: click
+          **More info → Run anyway**.
+          "@
+          gh release create "${{ github.ref_name }}" `
+            "out/Coucou-Windows-$v-setup.exe" `
+            --title "Coucou for Windows $v" `
+            --notes $notes
+
+      - name: Update the rolling windows-latest release
+        if: startsWith(github.ref, 'refs/tags/windows-v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.pack.outputs.version }}"
+          $exists = gh release view windows-latest 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit windows-latest --title "Coucou for Windows (latest)" --notes "Always the newest Windows build — currently $v."
+            gh release upload windows-latest "out/Coucou-Windows-setup.exe" --clobber
+          } else {
+            gh release create windows-latest `
+              "out/Coucou-Windows-setup.exe" `
+              --title "Coucou for Windows (latest)" `
+              --notes "Always the newest Windows build — currently $v." `
+              --latest=false
+          }
