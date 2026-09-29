@@ -225,12 +225,18 @@ function buildApproval(actions: ViewActions): ViewHost {
   const code = h("div", { class: "code" });
   const row = h("div", { class: "actions" });
   const el = h("div", { class: "view" }, card("amber", stack(116, 16, who, code, row)));
+  // The buttons are only rebuilt when they actually change: replacing them between
+  // a mouse-down and a mouse-up would swallow the click.
+  let rowKey = "";
   return {
     el,
     sync() {
       clear(who);
       who.append(agentWho(State.focusTask, "needs permission"));
       code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
+      const key = String(State.alwaysAllow);
+      if (key === rowKey) return;
+      rowKey = key;
       clear(row);
       row.append(
         btn("Deny", "secondary", () => actions.decide("deny"), "N"),
@@ -269,7 +275,10 @@ function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title", text: "Workflow stopped." });
   const detail = h("div", { class: "detail" });
-  const row = h("div", { class: "actions" });
+  const row = h("div", { class: "actions" },
+    btn("Retry", "primary", () => actions.setView(State.defaultView())),
+    btn("Open in n8n", "secondary", () => actions.openUrl("")),
+  );
   const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
   return {
     el,
@@ -279,11 +288,6 @@ function buildError(actions: ViewActions): ViewHost {
       who.append(agentWho(task, task?.source === "n8n" ? "n8n" : "Claude Code"));
       title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
       detail.textContent = task?.steps.at(-1) ?? "No detail available.";
-      clear(row);
-      row.append(
-        btn("Retry", "primary", () => actions.setView(State.defaultView())),
-        btn("Open in n8n", "secondary", () => actions.openUrl("")),
-      );
     },
   };
 }
@@ -293,7 +297,10 @@ function buildError(actions: ViewActions): ViewHost {
 function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title" });
-  const row = h("div", { class: "actions" });
+  const row = h("div", { class: "actions" },
+    btn("Open terminal", "primary", () => actions.openTerminal()),
+    btn("OK", "secondary", () => actions.collapse()),
+  );
   const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));
   return {
     el,
@@ -301,11 +308,6 @@ function buildFinished(actions: ViewActions): ViewHost {
       clear(who);
       who.append(agentWho(State.focusTask, "Claude Code finished"));
       title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
-      clear(row);
-      row.append(
-        btn("Open terminal", "primary", () => actions.openTerminal()),
-        btn("OK", "secondary", () => actions.collapse()),
-      );
     },
   };
 }

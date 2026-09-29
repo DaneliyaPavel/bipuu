@@ -1,6 +1,9 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
+mod hooks;
 mod island;
+mod log;
+mod pipe;
 mod settings;
 mod tray;
 
@@ -10,10 +13,12 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
+use hooks::{HookPreview, HookStatus};
 use island::{PollGate, ScreenInfo};
+use pipe::Pending;
 use settings::Settings;
 
 /// Keeps spawned helpers from flashing a console window.
@@ -35,7 +40,9 @@ pub struct BootInfo {
 
 #[tauri::command]
 fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
-    let settings = shared.settings.lock().unwrap().clone();
+    let mut settings = shared.settings.lock().unwrap().clone();
+    // The real state of ~/.claude/settings.json wins over whatever we stored.
+    settings.hooks_installed = hooks::status().installed;
     let screen = island::screen_info(&app, &settings.screen);
     BootInfo {
         settings,
@@ -68,6 +75,8 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
         island::apply_geometry(&app, &settings.screen, collapsed);
     }
+    // Keep the other window in step (island ⇄ settings window).
+    let _ = app.emit("settings-changed", settings);
 }
 
 /// Hidden island → shrink the window to the invisible wake strip and park the
@@ -77,15 +86,16 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
     island::apply_geometry(&app, &pref, collapsed);
-    if collapsed {
-        island::set_ignore_cursor(&app, false);
-    }
+    // The wake strip must always take the mouse, and a resize invalidates the flag.
+    island::set_ignore_cursor(&app, false);
+    shared.gate.forget_ignore_state();
     shared.gate.set_active(!collapsed);
 }
 
+/// The front end pushes the island shape; Rust decides click-through from it.
 #[tauri::command]
-fn set_ignore_cursor(app: AppHandle, ignore: bool) {
-    island::set_ignore_cursor(&app, ignore);
+fn set_island_rect(shared: State<Shared>, x: f64, y: f64, width: f64, height: f64) {
+    shared.gate.set_rect(island::IslandRect { x, y, w: width, h: height });
 }
 
 #[tauri::command]
@@ -147,6 +157,70 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+// ── Claude Code hooks ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn hooks_status() -> HookStatus {
+    hooks::status()
+}
+
+/// Returns the diff the user has to look at before anything is written.
+#[tauri::command]
+fn hooks_preview(install: bool) -> HookPreview {
+    hooks::preview(install)
+}
+
+/// Only ever called from an explicit click in the settings window.
+#[tauri::command]
+fn hooks_apply(app: AppHandle, shared: State<Shared>, install: bool) -> Result<String, String> {
+    let backup = hooks::write(install)?;
+    let updated = {
+        let mut current = shared.settings.lock().unwrap();
+        current.hooks_installed = install;
+        let _ = settings::save(&current);
+        current.clone()
+    };
+    let _ = app.emit("settings-changed", updated);
+    Ok(backup)
+}
+
+#[tauri::command]
+fn approval_decision(app: AppHandle, request_id: String, decision: String) {
+    pipe::answer(&app, &request_id, &decision);
+}
+
+/// Lets the island write to the same log as the Rust side.
+#[tauri::command]
+fn log_line(message: String) {
+    log::line(format!("ui  {message}"));
+}
+
+// ── Settings window ───────────────────────────────────────────────────────────
+
+pub fn show_settings_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        return;
+    }
+    if let Err(err) = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("Settings — Coucou")
+        .inner_size(560.0, 680.0)
+        .min_inner_size(460.0, 480.0)
+        .resizable(true)
+        .center()
+        .build()
+    {
+        log::line(format!("settings window failed: {err}"));
+    }
+}
+
+#[tauri::command]
+fn open_settings_window(app: AppHandle) {
+    show_settings_window(&app);
+}
+
 pub fn run() {
     let loaded = settings::load();
     let gate = Arc::new(PollGate::new());
@@ -160,16 +234,23 @@ pub fn run() {
             settings: Mutex::new(loaded.clone()),
             gate: gate.clone(),
         })
+        .manage(Pending::default())
         .invoke_handler(tauri::generate_handler![
             boot,
             save_settings,
             set_collapsed,
-            set_ignore_cursor,
+            set_island_rect,
             focus_window,
             reposition,
             open_url,
             open_in_vscode,
             quit_app,
+            hooks_status,
+            hooks_preview,
+            hooks_apply,
+            approval_decision,
+            log_line,
+            open_settings_window,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -183,6 +264,10 @@ pub fn run() {
             gate.collapsed.store(false, Ordering::Relaxed);
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());
+
+            log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
+            hooks::ensure_hook_exe(&handle);
+            pipe::start(handle.clone());
             Ok(())
         })
         .run(tauri::generate_context!())

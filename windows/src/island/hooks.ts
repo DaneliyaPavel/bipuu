@@ -10,6 +10,9 @@ import type { Island } from "./island";
 
 const CLAUDE_ID = "integration_claude";
 
+/** Clears the approval card if no decision was made before the hook gave up. */
+let pendingTimeout: number | null = null;
+
 interface HookPayload {
   hook_event_name?: string;
   request_id?: string;
@@ -187,6 +190,7 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "PermissionRequest": {
       upsert(projectName, cwd);
+      if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
       const command = typeof input.command === "string" ? input.command : tool;
@@ -201,6 +205,19 @@ function handleHook(island: Island, payload: HookPayload) {
       Sound.play("approval");
       if (focused) island.alert("approval");
       else State.setPillBadge(CLAUDE_ID, "approval");
+      // Coucou answers within 108 s or not at all; after that the terminal has
+      // taken over and the card would be lying.
+      pendingTimeout = window.setTimeout(() => {
+        pendingTimeout = null;
+        if (!State.pendingApproval) return;
+        State.pendingApproval = null;
+        State.isPinned = false;
+        island.dropPin();
+        State.updateTask(CLAUDE_ID, "working");
+        State.setPillBadge(CLAUDE_ID, null);
+        if (State.view === "approval") island.setView(State.defaultView());
+        State.notify();
+      }, 110_000);
       break;
     }
 

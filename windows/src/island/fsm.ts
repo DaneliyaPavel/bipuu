@@ -16,6 +16,8 @@ export class IslandStateMachine {
   greetAutoCollapseDelay = 0.6;
   /** coucou → petit while the mouse hovers the greeting. */
   greetHoverCollapseDelay = 10;
+  /** An alert waiting for an answer stays open, even when the mouse leaves. */
+  pinned = false;
 
   private petitHide: number | null = null;
   private homeCollapse: number | null = null;
@@ -106,6 +108,7 @@ export class IslandStateMachine {
 
   private scheduleHomeCollapse() {
     this.clear("homeCollapse");
+    if (this.pinned) return;
     this.homeCollapse = window.setTimeout(() => {
       this.homeCollapse = null;
       if (this.state === "home") this.transition("petit");

@@ -562,6 +562,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-autostart",
  "tauri-plugin-single-instance",
+ "tokio",
  "windows 0.61.3",
 ]
 

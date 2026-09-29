@@ -52,5 +52,11 @@ export default defineConfig({
     minify: "esbuild",
     sourcemap: false,
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        island: resolve(__dirname, "index.html"),
+        settings: resolve(__dirname, "settings.html"),
+      },
+    },
   },
 });

@@ -5,7 +5,7 @@
 // centre of the main display inside a borderless, transparent, always-on-top
 // window that never takes focus.
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -27,6 +27,10 @@ pub const STRIP_H: f64 = 6.0;
 
 pub const WINDOW_LABEL: &str = "island";
 
+/// Margin around the island that still counts as "on the island", in logical px.
+/// Wider than the macOS 6 pt because a click must never be swallowed.
+const HIT_MARGIN: f64 = 14.0;
+
 #[derive(Serialize, Clone)]
 pub struct CursorPayload {
     pub x: f64,
@@ -42,11 +46,25 @@ pub struct ScreenInfo {
     pub scale: f64,
 }
 
+/// The island shape in window-logical coordinates, pushed by the front end.
+/// The poll thread owns the click-through decision so it lands in the same 16 ms
+/// tick as the cursor read — an IPC round trip here loses clicks.
+#[derive(Clone, Copy, Default)]
+pub struct IslandRect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
 /// Wakes / parks the cursor poll thread so a hidden island costs literally nothing.
 pub struct PollGate {
     active: Mutex<bool>,
     cv: Condvar,
     pub collapsed: AtomicBool,
+    pub rect: Mutex<IslandRect>,
+    /// Mirrors the window flag so we only call into Win32 when it changes.
+    ignoring: AtomicBool,
 }
 
 impl PollGate {
@@ -55,7 +73,18 @@ impl PollGate {
             active: Mutex::new(false),
             cv: Condvar::new(),
             collapsed: AtomicBool::new(true),
+            rect: Mutex::new(IslandRect::default()),
+            ignoring: AtomicBool::new(false),
         }
+    }
+
+    pub fn set_rect(&self, rect: IslandRect) {
+        *self.rect.lock().unwrap() = rect;
+    }
+
+    /// Forces the next poll tick to re-apply the flag (after a window resize).
+    pub fn forget_ignore_state(&self) {
+        self.ignoring.store(false, Ordering::Relaxed);
     }
 
     pub fn set_active(&self, on: bool) {
@@ -203,6 +232,21 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                     continue;
                 }
                 last = (x, y);
+
+                // Click-through: the window only takes the mouse over the island
+                // shape. A small entry margin means the flag is already off by the
+                // time a moving cursor reaches a button.
+                let r = *gate.rect.lock().unwrap();
+                let inside = r.w > 0.0
+                    && x >= r.x - HIT_MARGIN
+                    && x <= r.x + r.w + HIT_MARGIN
+                    && y >= r.y - HIT_MARGIN
+                    && y <= r.y + r.h + HIT_MARGIN;
+                if gate.ignoring.load(Ordering::Relaxed) == inside {
+                    gate.ignoring.store(!inside, Ordering::Relaxed);
+                    let _ = win.set_ignore_cursor_events(!inside);
+                }
+
                 let _ = win.emit("cursor", CursorPayload { x, y });
             }
         }

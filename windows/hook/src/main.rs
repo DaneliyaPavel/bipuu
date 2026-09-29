@@ -51,6 +51,10 @@ fn run() {
     if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
         return;
     }
+    // Some shells hand us a UTF-8 BOM; serde_json would choke on it.
+    if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        raw.drain(..3);
+    }
 
     let Ok(mut payload) = serde_json::from_slice::<serde_json::Value>(&raw) else { return };
     let Some(map) = payload.as_object_mut() else { return };

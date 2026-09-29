@@ -18,7 +18,8 @@ import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
 
 const BOT_OVERHANG = 40;
-const HIT_MARGIN = 6;
+/** Same margin as the Rust hit test (src-tauri/src/island.rs). */
+const HIT_MARGIN = 14;
 
 const modeOrder = (m: IslandMode) => (m === "hidden" ? 0 : m === "compact" ? 1 : 2);
 
@@ -58,9 +59,9 @@ export class Island {
   // Rust starts the window at full size so the launch greeting has room.
   private collapsed = false;
   private collapseTimer: number | null = null;
-  // Tauri windows start with cursor events enabled; keep the mirror honest.
-  private ignoringCursor = false;
   private wasInIsland = false;
+  /** Last shape handed to Rust for the click-through test. */
+  private pushedRect = { x: -1, y: -1, w: -1, h: -1 };
   private homeCollapseAt: number | null = null;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
@@ -104,12 +105,14 @@ export class Island {
       },
       decide: (d) => {
         const req = State.pendingApproval;
+        void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
         if (!req) return;
         Sound.play(d === "deny" ? "blip" : "approve");
         void Bridge.approvalDecision(req.requestId, d);
         if (d === "always") State.alwaysAllow = true;
         State.pendingApproval = null;
         State.isPinned = false;
+        this.fsm.pinned = false;
         State.updateTask("integration_claude", "working");
         State.setPillBadge("integration_claude", null);
         this.setView(State.defaultView());
@@ -132,7 +135,7 @@ export class Island {
         void Bridge.saveSettings(State.settings);
         State.notify();
       },
-      openSettingsWindow: () => this.setView("settings"),
+      openSettingsWindow: () => void Bridge.openSettingsWindow(),
       blip: () => Sound.play("blip"),
     };
 
@@ -247,18 +250,25 @@ export class Island {
 
   collapse() {
     State.isPinned = false;
+    this.fsm.pinned = false;
     if (this.fsm.state === "home") this.fsm.mouseLeft();
     this.setMode("compact");
   }
 
-  /** Alert from the hook server: open on this view and pin it. */
+  /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */
   alert(view: IslandViewName) {
+    this.fsm.pinned = State.isPinned;
     this.fsm.forceHome();
     this.expand(view);
   }
 
   reveal() {
     this.fsm.reveal();
+  }
+
+  /** An alert stopped waiting for an answer: let the island auto-close again. */
+  dropPin() {
+    this.fsm.pinned = false;
   }
 
   // ── Geometry ────────────────────────────────────────────────────────────────
@@ -296,6 +306,13 @@ export class Island {
     this.miniGrid.style.left = `${w - 40 - 14}px`;
     this.miniGrid.style.top = `${hh / 2 - 14}px`;
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
+
+    const rect = { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+    const p = this.pushedRect;
+    if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
+      this.pushedRect = rect;
+      void Bridge.setIslandRect(rect.x, rect.y, rect.w, rect.h);
+    }
   }
 
   /** Island rect in window coordinates (origin top-left of the 720×320 window). */
@@ -319,9 +336,7 @@ export class Island {
         this.collapseTimer = null;
         if (State.mode !== "hidden") return;
         this.collapsed = true;
-        this.ignoringCursor = false;
         void Bridge.setCollapsed(true);
-        void Bridge.setIgnoreCursor(false);
       }, 420);
     } else if (this.collapsed) {
       // Grow the window back before the island animates open.
@@ -373,11 +388,6 @@ export class Island {
     const inIsland =
       x >= rect.x - HIT_MARGIN && x <= rect.x + rect.w + HIT_MARGIN &&
       y >= rect.y - HIT_MARGIN && y <= rect.y + rect.h + HIT_MARGIN;
-
-    if (this.ignoringCursor === inIsland) {
-      this.ignoringCursor = !inIsland;
-      void Bridge.setIgnoreCursor(!inIsland);
-    }
 
     if (inIsland && !this.wasInIsland) {
       if (this.fsm.state === "coucou") this.greeting.hover();

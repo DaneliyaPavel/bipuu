@@ -35,11 +35,12 @@ export const Bridge = {
   /** Shrink the window down to the invisible wake strip (hidden) or back to full. */
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),
 
-  /** Island shape in window coordinates, so Rust can do the click-through test. */
-  setIslandRect: (x: number, y: number, width: number, height: number, radius: number) =>
-    call<void>("set_island_rect", { x, y, width, height, radius }),
-
-  setIgnoreCursor: (ignore: boolean) => call<void>("set_ignore_cursor", { ignore }),
+  /**
+   * Pushes the island shape in window coordinates. Rust flips click-through from
+   * its own cursor poll, so the flag is never a frame behind a click.
+   */
+  setIslandRect: (x: number, y: number, width: number, height: number) =>
+    call<void>("set_island_rect", { x, y, width, height }),
 
   /** Give the window keyboard focus (chat field) and take it away again. */
   focusWindow: (focused: boolean) => call<void>("focus_window", { focused }),
@@ -53,14 +54,40 @@ export const Bridge = {
 
   quit: () => call<void>("quit_app"),
 
-  // ── Claude Code hooks (stage 2) ───────────────────────────────────────────
-  hooksStatus: () => call<{ installed: boolean; settingsPath: string }>("hooks_status"),
-  hooksPreview: () => call<{ diff: string; backup: string }>("hooks_preview"),
-  hooksInstall: () => call<void>("hooks_install"),
-  hooksUninstall: () => call<void>("hooks_uninstall"),
+  openSettingsWindow: () => call<void>("open_settings_window"),
+
+  /** Writes to %LOCALAPPDATA%\Coucou\coucou.log, next to the Rust lines. */
+  log: (message: string) => call<void>("log_line", { message }),
+
+  // ── Claude Code hooks ─────────────────────────────────────────────────────
+  hooksStatus: () => call<HookStatus>("hooks_status"),
+  /** Diff to show before anything is written. `install: false` previews removal. */
+  hooksPreview: (install: boolean) => call<HookPreview>("hooks_preview", { install }),
+  /** Writes ~/.claude/settings.json — only ever after an explicit click. */
+  hooksApply: (install: boolean) => callOrThrow<string>("hooks_apply", { install }),
+
   approvalDecision: (requestId: string, decision: "allow" | "deny" | "always") =>
     call<void>("approval_decision", { requestId, decision }),
 };
+
+export interface HookStatus {
+  installed: boolean;
+  settingsPath: string;
+  hookPath: string;
+  hookReady: boolean;
+}
+
+export interface HookPreview {
+  diff: string;
+  backup: string;
+  settingsPath: string;
+}
+
+/** Same as `call`, but surfaces the error so the UI can show what went wrong. */
+async function callOrThrow<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (!IS_TAURI) throw new Error("not running inside Coucou");
+  return invoke<T>(cmd, args);
+}
 
 export type BridgeEvent =
   | { name: "cursor"; payload: { x: number; y: number } }

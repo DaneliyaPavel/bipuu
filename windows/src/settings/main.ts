@@ -1,0 +1,240 @@
+// Settings window — the place where anything that writes to disk is confirmed.
+// Stage 2 covers the Claude Code hooks and the general preferences; API keys and
+// integrations land here too in a later stage.
+
+import "./settings.css";
+import { Bridge, onEvent, type HookStatus } from "../core/bridge";
+import { DEFAULT_SETTINGS, type Settings } from "../core/state";
+import { h, clear } from "../views/dom";
+
+let settings: Settings = { ...DEFAULT_SETTINGS };
+let version = "";
+
+const root = document.getElementById("settings-root")!;
+
+async function save() {
+  await Bridge.saveSettings(settings);
+}
+
+// ── Reusable bits ─────────────────────────────────────────────────────────────
+
+function toggle(on: boolean, onChange: (v: boolean) => void): HTMLElement {
+  const el = h("button", { class: on ? "switch on" : "switch", "aria-pressed": on });
+  el.addEventListener("click", () => {
+    const next = !el.classList.contains("on");
+    el.classList.toggle("on", next);
+    onChange(next);
+  });
+  return el;
+}
+
+function statusDot(ok: boolean): HTMLElement {
+  return h("i", { class: "dot", style: `background:${ok ? "#22c55e" : "#f4505e"}` });
+}
+
+function renderDiff(text: string): HTMLElement {
+  const box = h("div", { class: "diff" });
+  for (const line of text.split("\n")) {
+    const cls = line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "ctx";
+    box.append(h("div", { class: cls, text: line }));
+  }
+  return box;
+}
+
+// ── Claude Code section ───────────────────────────────────────────────────────
+
+function claudeSection(status: HookStatus): HTMLElement {
+  const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
+  const section = h(
+    "section",
+    {},
+    h("h2", {}, statusDot(status.installed), h("span", { text: "Claude Code" })),
+    body,
+  );
+
+  const rebuild = async () => {
+    const fresh = await Bridge.hooksStatus();
+    if (fresh) Object.assign(status, fresh);
+    clear(body);
+    draw();
+    const head = section.querySelector("h2")!;
+    clear(head);
+    head.append(statusDot(status.installed), h("span", { text: "Claude Code" }));
+  };
+
+  function draw() {
+    body.append(
+      h("div", {
+        class: "hint",
+        text: status.installed
+          ? "Coucou is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there."
+          : "Install the hooks to see your Claude Code sessions in the island and approve permissions without leaving what you are doing.",
+      }),
+      h("div", { class: "row" },
+        h("label", { text: "settings.json" }),
+        h("span", { class: "path", text: status.settingsPath }),
+      ),
+      h("div", { class: "row" },
+        h("label", { text: "Relay" }),
+        h("span", { class: "path", text: status.hookPath }),
+        statusDot(status.hookReady),
+      ),
+    );
+
+    if (!status.hookReady) {
+      body.append(h("div", {
+        class: "notice warn",
+        text: "coucou-hook.exe is not in place yet. Restart Coucou; if it still fails, build it with `cargo build -p coucou-hook`.",
+      }));
+    }
+
+    const actions = h("div", { class: "row" });
+    const install = h("button", {
+      class: "primary",
+      text: status.installed ? "Reinstall hooks…" : "Install hooks…",
+      onclick: () => showPreview(true),
+    });
+    actions.append(install);
+    if (status.installed) {
+      actions.append(h("button", {
+        class: "danger",
+        text: "Uninstall hooks…",
+        onclick: () => showPreview(false),
+      }));
+    }
+    body.append(actions);
+  }
+
+  async function showPreview(install: boolean) {
+    const preview = await Bridge.hooksPreview(install);
+    if (!preview) return;
+    clear(body);
+    body.append(
+      h("div", {
+        class: "hint",
+        text: install
+          ? "This is exactly what will change in your settings.json. Your own hooks are left untouched."
+          : "This removes Coucou's entries only. Your own hooks are left untouched.",
+      }),
+      renderDiff(preview.diff),
+      h("div", { class: "row" },
+        h("span", { class: "path", text: `Backup → ${preview.backup}` }),
+      ),
+    );
+    const confirm = h("button", {
+      class: install ? "primary" : "danger",
+      text: install ? "Back up and write" : "Back up and remove",
+    });
+    confirm.addEventListener("click", async () => {
+      confirm.disabled = true;
+      try {
+        const backup = await Bridge.hooksApply(install);
+        clear(body);
+        body.append(h("div", {
+          class: "notice ok",
+          text: `Done. Previous settings saved as ${backup}. Open a new Claude Code session to pick the hooks up.`,
+        }));
+        window.setTimeout(() => void rebuild(), 2600);
+      } catch (err) {
+        confirm.disabled = false;
+        body.append(h("div", { class: "notice err", text: `Could not write: ${String(err)}` }));
+      }
+    });
+    body.append(h("div", { class: "row" }, confirm, h("button", {
+      text: "Cancel",
+      onclick: () => { clear(body); draw(); },
+    })));
+  }
+
+  draw();
+  return section;
+}
+
+// ── General section ───────────────────────────────────────────────────────────
+
+function generalSection(): HTMLElement {
+  const volume = h("input", {
+    type: "range", min: "0", max: "0.2", step: "0.005",
+    value: String(settings.soundVolume),
+  }) as HTMLInputElement;
+  volume.addEventListener("input", () => {
+    settings.soundVolume = Number(volume.value);
+    void save();
+  });
+
+  const autoClose = h("input", {
+    type: "number", min: "5", max: "120", step: "1",
+    value: String(Math.round(settings.autoCloseInterval)),
+    style: "width:72px",
+  }) as HTMLInputElement;
+  autoClose.addEventListener("change", () => {
+    settings.autoCloseInterval = Math.max(5, Math.min(120, Number(autoClose.value) || 15));
+    autoClose.value = String(settings.autoCloseInterval);
+    void save();
+  });
+
+  const screen = h("select", {}) as HTMLSelectElement;
+  screen.append(
+    h("option", { value: "primary", text: "Main display" }),
+    h("option", { value: "cursor", text: "Display under the cursor" }),
+  );
+  screen.value = settings.screen;
+  screen.addEventListener("change", () => {
+    settings.screen = screen.value as Settings["screen"];
+    void save();
+  });
+
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: "General" })),
+    h("div", { class: "row" },
+      h("label", { text: "Sound" }),
+      toggle(settings.soundEnabled, (v) => { settings.soundEnabled = v; void save(); }),
+      volume,
+    ),
+    h("div", { class: "row" },
+      h("label", { text: "Auto-close" }),
+      autoClose,
+      h("span", { class: "hint", text: "seconds after you leave the island" }),
+    ),
+    h("div", { class: "row" },
+      h("label", { text: "Island lives on" }),
+      screen,
+    ),
+    h("div", { class: "row" },
+      h("label", { text: "Launch at startup" }),
+      toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
+    ),
+  );
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+
+async function main() {
+  const boot = await Bridge.boot();
+  if (boot) {
+    settings = { ...settings, ...boot.settings };
+    version = boot.version;
+  }
+  const status = (await Bridge.hooksStatus()) ?? {
+    installed: false, settingsPath: "", hookPath: "", hookReady: false,
+  };
+
+  clear(root);
+  root.append(
+    h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
+    claudeSection(status),
+    generalSection(),
+    h("div", {
+      class: "hint",
+      text: "No telemetry. Network requests only go to the services you configure yourself.",
+    }),
+  );
+
+  void onEvent<Settings>("settings-changed", (s) => {
+    settings = { ...settings, ...s };
+  });
+}
+
+void main();

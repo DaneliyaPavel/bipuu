@@ -3,7 +3,7 @@
 import "./style.css";
 import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
 import { Sound } from "./core/sound";
-import { State } from "./core/state";
+import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 
@@ -43,6 +43,12 @@ async function main() {
   });
 
   await onEvent<null>("screen-changed", () => void Bridge.reposition());
+
+  // The settings window writes preferences; apply them here without a restart.
+  await onEvent<Settings>("settings-changed", (s) => {
+    State.settings = { ...State.settings, ...s };
+    island.applySettings();
+  });
 
   registerHookHandlers(island);
 
