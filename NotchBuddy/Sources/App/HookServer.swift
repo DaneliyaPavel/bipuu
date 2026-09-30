@@ -287,12 +287,9 @@ final class HookServer: @unchecked Sendable {
         state.isPinned = true
         SoundEngine.shared.play("approval")
 
-        let focused = state.focusId == "integration_claude"
-        if focused {
-            expandIfNeeded(to: .approval)
-        } else {
-            setPillBadge(id: "integration_claude", badge: .approval)
-        }
+        // Approval always forces the island open — user must be able to respond
+        state.focusId = "integration_claude"
+        expandIfNeeded(to: .approval)
 
         let captured = fd
         DispatchQueue.main.asyncAfter(deadline: .now() + 115) { [weak self] in
