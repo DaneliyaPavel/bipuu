@@ -439,12 +439,14 @@ final class HookServer: @unchecked Sendable {
     }
 
     private func sendLine(fd: Int32, text: String) {
-        var bytes = Array((text + "\n").utf8)
-        var sent = 0
-        while sent < bytes.count {
-            let n = Darwin.send(fd, &bytes[sent], bytes.count - sent, 0)
-            if n <= 0 { break }
-            sent += n
+        let bytes = Array((text + "\n").utf8)
+        bytes.withUnsafeBytes { buffer in
+            var sent = 0
+            while sent < buffer.count {
+                let n = Darwin.send(fd, buffer.baseAddress! + sent, buffer.count - sent, 0)
+                if n <= 0 { break }
+                sent += n
+            }
         }
     }
 
