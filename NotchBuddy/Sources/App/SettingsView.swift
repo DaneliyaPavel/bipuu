@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var statusMessage: String = ""
     @State private var showDiff: Bool = false
     @State private var pendingHookJSON: String = ""
+    @State private var hookNeedsUpdate: Bool = HookServer.hooksNeedUpdate()
     #if APPSTORE
     @State private var claudeAccessGranted: Bool = (UserDefaults.standard.data(forKey: "claudeDirectoryBookmark") != nil)
     #endif
@@ -65,6 +66,20 @@ struct SettingsView: View {
                 // MARK: Hooks
                 GroupBox("Claude Code Hooks") {
                     VStack(alignment: .leading, spacing: 10) {
+                        if hookNeedsUpdate {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("Hook timeout outdated — update to fix approvals")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.orange)
+                            }
+                            #if APPSTORE
+                            Button("Update hooks") { installHooksAppStore() }
+                            #else
+                            Button("Update hooks") { installHooks() }
+                            #endif
+                        }
                         #if APPSTORE
                         if claudeAccessGranted {
                             Text("~/.claude/coucou/nb-hook")
@@ -424,6 +439,7 @@ struct SettingsView: View {
             showDiff = false
             statusMessage = "✓ Hooks installed in ~/.claude/settings.json"
             pendingHookJSON = ""
+            hookNeedsUpdate = false
         } catch {
             statusMessage = "❌ Write error: \(error.localizedDescription)"
         }
@@ -460,6 +476,7 @@ struct SettingsView: View {
             showDiff = false
             statusMessage = "✓ Hooks installed in ~/.claude/settings.json"
             pendingHookJSON = ""
+            hookNeedsUpdate = false
         } catch {
             statusMessage = "❌ Write error: \(error.localizedDescription)"
         }

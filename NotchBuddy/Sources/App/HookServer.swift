@@ -144,8 +144,8 @@ final class HookServer: @unchecked Sendable {
             activeSessionId = sessionId
             upsertTask(projectName: projectName, cwd: cwd)
             state.updateTask(id: "integration_claude", state: .thinking)
-            if let message = payload["message"] as? String, !message.isEmpty {
-                appendStep(id: "integration_claude", step: String(message.prefix(60)))
+            if let prompt = payload["prompt"] as? String, !prompt.isEmpty {
+                appendStep(id: "integration_claude", step: String(prompt.prefix(60)))
             }
             if state.isPresent { expandIfNeeded(to: .overview) }
 
@@ -467,6 +467,33 @@ final class HookServer: @unchecked Sendable {
         #endif
     }
 
+    // MARK: - Outdated hook detection
+
+    /// Returns true if settings.json has a Coucou PermissionRequest hook with timeout < 120s.
+    static func hooksNeedUpdate() -> Bool {
+        let settingsURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/settings.json")
+        guard let data = try? Data(contentsOf: settingsURL),
+              let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hooks = settings["hooks"] as? [String: Any],
+              let permReqHooks = hooks["PermissionRequest"] as? [[String: Any]] else {
+            return false
+        }
+        for matcher in permReqHooks {
+            if let hookList = matcher["hooks"] as? [[String: Any]] {
+                for hook in hookList {
+                    if let cmd = hook["command"] as? String,
+                       (cmd.contains("NotchBuddy") || cmd.contains("coucou")),
+                       let timeout = hook["timeout"] as? Int,
+                       timeout < 120 {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
     // MARK: - Claude Code settings.json hook installer
 
     private var _pendingHooksData: Data?
@@ -515,7 +542,7 @@ final class HookServer: @unchecked Sendable {
             ("SessionStart", 10), ("SessionEnd", 10),
             ("UserPromptSubmit", 10),
             ("PreToolUse", 10), ("PostToolUse", 10), ("PostToolUseFailure", 10),
-            ("PermissionRequest", 10),
+            ("PermissionRequest", 120),
             ("Notification", 10),
             ("Stop", 10), ("StopFailure", 10),
             ("SubagentStart", 10), ("SubagentStop", 10),
@@ -626,7 +653,7 @@ final class HookServer: @unchecked Sendable {
             ("SessionStart", 10), ("SessionEnd", 10),
             ("UserPromptSubmit", 10),
             ("PreToolUse", 10), ("PostToolUse", 10), ("PostToolUseFailure", 10),
-            ("PermissionRequest", 10),
+            ("PermissionRequest", 120),
             ("Notification", 10),
             ("Stop", 10), ("StopFailure", 10),
             ("SubagentStart", 10), ("SubagentStop", 10),
@@ -657,8 +684,8 @@ extension Notification.Name {
 
 private let nbHookScript = """
 #!/usr/bin/env python3
-# nb-hook — Notch Buddy hook relay for Claude Code
-# Reads JSON from stdin, forwards to NotchBuddy via Unix socket, relays response.
+# nb-hook — Coucou hook relay for Claude Code
+# Reads JSON from stdin, forwards to Coucou via Unix socket, translates response.
 import sys, json, os, socket
 
 def main():
@@ -685,7 +712,7 @@ def main():
     )
 
     if event == 'PermissionRequest':
-        # Block and wait for NotchBuddy's decision (Claude Code allows up to 120s)
+        # Block and wait for Coucou's decision (Claude Code allows up to 120s)
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(118)
@@ -701,15 +728,50 @@ def main():
                     break
             s.close()
             response = b''.join(chunks).decode().strip()
-            if response and 'permissionDecision' in response:
-                sys.stdout.write(response + '\\n')
-                sys.stdout.flush()
-                sys.exit(0)
+            if response:
+                try:
+                    resp_obj = json.loads(response)
+                    decision = resp_obj.get('permissionDecision', '')
+                except Exception:
+                    decision = ''
+                if decision == 'allow':
+                    out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'allow'}}}
+                    sys.stdout.write(json.dumps(out) + '\\n')
+                    sys.stdout.flush()
+                    sys.exit(0)
+                elif decision == 'always':
+                    # Persist the permission rule from Claude Code's suggestion
+                    suggestions = payload.get('permission_suggestions', [])
+                    if suggestions:
+                        try:
+                            settings_path = os.path.expanduser('~/.claude/settings.json')
+                            if os.path.exists(settings_path):
+                                with open(settings_path, 'r') as f:
+                                    settings = json.load(f)
+                            else:
+                                settings = {}
+                            perms = settings.setdefault('permissions', {})
+                            allow_list = perms.setdefault('allow', [])
+                            for rule in suggestions:
+                                if rule not in allow_list:
+                                    allow_list.append(rule)
+                            with open(settings_path, 'w') as f:
+                                json.dump(settings, f, indent=2, sort_keys=True)
+                        except Exception:
+                            pass
+                    out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'allow'}}}
+                    sys.stdout.write(json.dumps(out) + '\\n')
+                    sys.stdout.flush()
+                    sys.exit(0)
+                elif decision == 'deny':
+                    out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'deny', 'message': 'Denied from Coucou'}}}
+                    sys.stdout.write(json.dumps(out) + '\\n')
+                    sys.stdout.flush()
+                    sys.exit(0)
         except Exception:
             pass
-        # Fallback: deny if NotchBuddy unreachable or timeout
-        sys.stdout.write('{"permissionDecision":"deny"}\\n')
-        sys.stdout.flush()
+        # App unreachable, timed out, or unknown decision — print nothing
+        # Claude Code will handle the absence of output
         sys.exit(0)
 
     # All other events: fire-and-forget (0.3s timeout, never blocks)
@@ -730,7 +792,8 @@ sys.exit(0)
 
 private let nbHookScriptAppStore = """
 #!/usr/bin/env python3
-# nb-hook — Notch Buddy (App Store) hook relay for Claude Code
+# nb-hook — Coucou (App Store) hook relay for Claude Code
+# Socket lives inside the sandboxed container; script runs outside the sandbox.
 import sys, json, os, socket
 
 def main():
@@ -751,12 +814,12 @@ def main():
         payload['cwd'] = os.getcwd()
 
     event = payload.get('hook_event_name', '')
-    # App Store version: socket lives inside the sandboxed container
     socket_path = os.path.expanduser(
         '~/Library/Containers/app.example.Coucou/Data/Library/Application Support/NotchBuddy/nb.sock'
     )
 
     if event == 'PermissionRequest':
+        # Block and wait for Coucou's decision (Claude Code allows up to 120s)
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(118)
@@ -772,14 +835,49 @@ def main():
                     break
             s.close()
             response = b''.join(chunks).decode().strip()
-            if response and 'permissionDecision' in response:
-                sys.stdout.write(response + '\\n')
-                sys.stdout.flush()
-                sys.exit(0)
+            if response:
+                try:
+                    resp_obj = json.loads(response)
+                    decision = resp_obj.get('permissionDecision', '')
+                except Exception:
+                    decision = ''
+                if decision == 'allow':
+                    out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'allow'}}}
+                    sys.stdout.write(json.dumps(out) + '\\n')
+                    sys.stdout.flush()
+                    sys.exit(0)
+                elif decision == 'always':
+                    # Script runs outside sandbox so ~/.claude/settings.json is directly accessible
+                    suggestions = payload.get('permission_suggestions', [])
+                    if suggestions:
+                        try:
+                            settings_path = os.path.expanduser('~/.claude/settings.json')
+                            if os.path.exists(settings_path):
+                                with open(settings_path, 'r') as f:
+                                    settings = json.load(f)
+                            else:
+                                settings = {}
+                            perms = settings.setdefault('permissions', {})
+                            allow_list = perms.setdefault('allow', [])
+                            for rule in suggestions:
+                                if rule not in allow_list:
+                                    allow_list.append(rule)
+                            with open(settings_path, 'w') as f:
+                                json.dump(settings, f, indent=2, sort_keys=True)
+                        except Exception:
+                            pass
+                    out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'allow'}}}
+                    sys.stdout.write(json.dumps(out) + '\\n')
+                    sys.stdout.flush()
+                    sys.exit(0)
+                elif decision == 'deny':
+                    out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'deny', 'message': 'Denied from Coucou'}}}
+                    sys.stdout.write(json.dumps(out) + '\\n')
+                    sys.stdout.flush()
+                    sys.exit(0)
         except Exception:
             pass
-        sys.stdout.write('{"permissionDecision":"deny"}\\n')
-        sys.stdout.flush()
+        # App unreachable, timed out, or unknown decision — print nothing
         sys.exit(0)
 
     try:
@@ -789,7 +887,7 @@ def main():
         s.sendall((json.dumps(payload) + '\\n').encode())
         s.close()
     except Exception:
-        pass
+        pass  # Always exit cleanly — never block Claude Code
 
 main()
 sys.exit(0)
