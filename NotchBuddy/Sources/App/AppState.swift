@@ -180,10 +180,6 @@ final class AppState: ObservableObject {
     // Pending approval request from Claude Code hook
     @Published var pendingApproval: ApprovalInfo? = nil
 
-    // Always-allow mode (set by "Toujours autoriser" button)
-    @Published var alwaysAllow: Bool = false
-
-
     // MARK: - Init (loads persisted settings)
 
     private init() {

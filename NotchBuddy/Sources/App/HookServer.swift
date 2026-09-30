@@ -273,7 +273,8 @@ final class HookServer: @unchecked Sendable {
         if pendingApprovalFD >= 0 {
             let old = pendingApprovalFD
             Task.detached { [weak self] in
-                self?.sendLine(fd: old, text: #"{"permissionDecision":"deny"}"#)
+                // "ask" → nb-hook outputs nothing → Claude Code re-asks
+                self?.sendLine(fd: old, text: #"{"permissionDecision":"ask"}"#)
                 close(old)
             }
         }
@@ -296,7 +297,8 @@ final class HookServer: @unchecked Sendable {
         let captured = fd
         DispatchQueue.main.asyncAfter(deadline: .now() + 115) { [weak self] in
             guard let self, self.pendingApprovalFD == captured else { return }
-            self.sendApprovalDecision("deny")
+            // "ask" → nb-hook outputs nothing → Claude Code re-asks rather than denying
+            self.sendApprovalDecision("ask")
         }
     }
 
@@ -309,7 +311,8 @@ final class HookServer: @unchecked Sendable {
         let json: String
         switch decision {
         case "allow":  json = #"{"permissionDecision":"allow"}"#
-        case "always": json = #"{"permissionDecision":"allow","alwaysAllow":true}"#
+        case "always": json = #"{"permissionDecision":"always"}"#
+        case "ask":    json = #"{"permissionDecision":"ask"}"#
         default:       json = #"{"permissionDecision":"deny"}"#
         }
 
@@ -321,7 +324,6 @@ final class HookServer: @unchecked Sendable {
         }
 
         let state = AppState.shared
-        if decision == "always" { state.alwaysAllow = true }
         state.pendingApproval = nil
         state.isPinned = false
         state.updateTask(id: "integration_claude", state: .working)
@@ -740,26 +742,9 @@ def main():
                     sys.stdout.flush()
                     sys.exit(0)
                 elif decision == 'always':
-                    # Persist the permission rule from Claude Code's suggestion
+                    # Let Claude Code persist the rule via updatedPermissions
                     suggestions = payload.get('permission_suggestions', [])
-                    if suggestions:
-                        try:
-                            settings_path = os.path.expanduser('~/.claude/settings.json')
-                            if os.path.exists(settings_path):
-                                with open(settings_path, 'r') as f:
-                                    settings = json.load(f)
-                            else:
-                                settings = {}
-                            perms = settings.setdefault('permissions', {})
-                            allow_list = perms.setdefault('allow', [])
-                            for rule in suggestions:
-                                if rule not in allow_list:
-                                    allow_list.append(rule)
-                            with open(settings_path, 'w') as f:
-                                json.dump(settings, f, indent=2, sort_keys=True)
-                        except Exception:
-                            pass
-                    out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'allow'}}}
+                    out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'allow', 'updatedPermissions': suggestions}}}
                     sys.stdout.write(json.dumps(out) + '\\n')
                     sys.stdout.flush()
                     sys.exit(0)
@@ -768,10 +753,11 @@ def main():
                     sys.stdout.write(json.dumps(out) + '\\n')
                     sys.stdout.flush()
                     sys.exit(0)
+                # 'ask' or unknown: fall through → no output → Claude Code re-asks
         except Exception:
             pass
-        # App unreachable, timed out, or unknown decision — print nothing
-        # Claude Code will handle the absence of output
+        # App unreachable, timed out, or no explicit decision — print nothing
+        # Claude Code will handle the absence of output (re-ask or default behaviour)
         sys.exit(0)
 
     # All other events: fire-and-forget (0.3s timeout, never blocks)
@@ -847,26 +833,9 @@ def main():
                     sys.stdout.flush()
                     sys.exit(0)
                 elif decision == 'always':
-                    # Script runs outside sandbox so ~/.claude/settings.json is directly accessible
+                    # Let Claude Code persist the rule via updatedPermissions
                     suggestions = payload.get('permission_suggestions', [])
-                    if suggestions:
-                        try:
-                            settings_path = os.path.expanduser('~/.claude/settings.json')
-                            if os.path.exists(settings_path):
-                                with open(settings_path, 'r') as f:
-                                    settings = json.load(f)
-                            else:
-                                settings = {}
-                            perms = settings.setdefault('permissions', {})
-                            allow_list = perms.setdefault('allow', [])
-                            for rule in suggestions:
-                                if rule not in allow_list:
-                                    allow_list.append(rule)
-                            with open(settings_path, 'w') as f:
-                                json.dump(settings, f, indent=2, sort_keys=True)
-                        except Exception:
-                            pass
-                    out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'allow'}}}
+                    out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'allow', 'updatedPermissions': suggestions}}}
                     sys.stdout.write(json.dumps(out) + '\\n')
                     sys.stdout.flush()
                     sys.exit(0)
@@ -875,9 +844,10 @@ def main():
                     sys.stdout.write(json.dumps(out) + '\\n')
                     sys.stdout.flush()
                     sys.exit(0)
+                # 'ask' or unknown: fall through → no output → Claude Code re-asks
         except Exception:
             pass
-        # App unreachable, timed out, or unknown decision — print nothing
+        # App unreachable, timed out, or no explicit decision — print nothing
         sys.exit(0)
 
     try:
