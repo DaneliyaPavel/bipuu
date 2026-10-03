@@ -53,6 +53,27 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(soundEnabled, forKey: "soundEnabled") }
     }
 
+    // Mochi outfit selection — persisted
+    @Published var mochiOutfitSelection: Outfit = .auto {
+        didSet { Outfit.stored = mochiOutfitSelection }
+    }
+    // Transient: outfit preview while hovering in wardrobe (overrides resolvedOutfit in BotCanvasView)
+    var wardrobePreviewOutfit: Outfit? = nil
+    // Per-day seasonal cache — avoids recomputing Easter and date math on every frame
+    private var _seasonalCache: (dayOfYear: Int, year: Int, outfit: Outfit)?
+    var resolvedOutfit: Outfit {
+        if let preview = wardrobePreviewOutfit { return preview }
+        guard mochiOutfitSelection == .auto else { return mochiOutfitSelection }
+        let cal = Calendar.current
+        let now = Date()
+        let day  = cal.ordinality(of: .day, in: .year, for: now) ?? 0
+        let year = cal.component(.year, from: now)
+        if let c = _seasonalCache, c.dayOfYear == day && c.year == year { return c.outfit }
+        let outfit = Outfit.seasonal(for: now, calendar: cal)
+        _seasonalCache = (dayOfYear: day, year: year, outfit: outfit)
+        return outfit
+    }
+
     // Claude model used by the chat and the search — persisted
     static let defaultClaudeModel = "claude-sonnet-4-6"
     @Published var claudeModel: String = AppState.defaultClaudeModel {
@@ -373,6 +394,7 @@ final class AppState: ObservableObject {
 
         if let v = ud.object(forKey: "soundEnabled") as? Bool   { soundEnabled = v }
         if let v = ud.object(forKey: "soundVolume")  as? Double { soundVolume  = v }
+        mochiOutfitSelection = Outfit.stored
         if let v = ud.string(forKey: "claudeModel"),
            !v.trimmingCharacters(in: .whitespaces).isEmpty { claudeModel = v }
         if let v = ud.string(forKey: "chatProvider"), let p = ChatProvider(rawValue: v) { chatProvider = p }
