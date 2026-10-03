@@ -114,6 +114,29 @@ Réglages → Agents → Plan usage → **Uninstall relay**. Remet l'objet `stat
 
 ---
 
+## 1ter. Diff en direct (live diff)
+
+Sur `PostToolUse` pour `Edit`, `MultiEdit` et `Write` (Claude Code, Cursor), l'app calcule un diff ligne à ligne et l'affiche dans le fil de l'île.
+
+**Données**
+- `Edit` : `old_string → new_string`
+- `MultiEdit` : liste `edits`, chaque entrée `old_string → new_string`
+- `Write` : `content` — tout le contenu est compté en ajout (on ne lit jamais le fichier sur le disque)
+- Le diff est calculé localement (Foundation, jamais de lecture sur le disque).
+- Limite : 200 Ko de texte combiné ou 4 000 lignes combinées → bilan seul, "Diff too large".
+- Mémoire : 50 diffs max par session, les plus anciens sont oubliés ; tout effacé à la fin de la session (`SessionEnd`) ou après une heure sans activité.
+
+**Fil (TickerView)** — les étapes de modification affichent le nom du fichier, `+N` en vert `#22C55E` et `−M` en rouge `#F4505E`, petits et monospacés.
+
+**Carte diff** — un clic sur une étape de modification ouvre la carte diff dans la vue principale :
+- En-tête : nom du fichier + bilan + bouton ↗ (ouvre dans VS Code via `code -g fichier:ligne`, sinon `NSWorkspace`)
+- Lignes en monospace 10,5 pt, fond vert ou rouge à 12 %, symbole +/− en marge, 3 lignes de contexte
+- Défilement vertical ; Échap ou clic sur l'en-tête pour revenir au fil
+
+**Vue Terminé (FinishedView)** — liste les fichiers touchés (nom + bilan, 4 au plus, puis "+ N more"). Un clic affiche la carte diff du dernier diff connu pour ce fichier.
+
+---
+
 ## 2. n8n (workflows de Louis)
 
 - Réglages : URL de l'instance (probablement `https://n8n.example.invalid`, **à confirmer avec Louis**) et clé API n8n (Trousseau). La clé se crée dans n8n : Settings → n8n API.
