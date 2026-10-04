@@ -204,6 +204,9 @@ targets:
     sources:
       - path: Sources/Phone
         type: group
+      # Shared with the Mac targets (they get it through Sources/).
+      - path: Sources/CoucouKit
+        type: group
     info:
       path: Resources/InfoPhone.plist
       properties:

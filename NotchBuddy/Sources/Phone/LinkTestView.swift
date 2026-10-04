@@ -62,6 +62,9 @@ struct LinkTestView: View {
             }
             .navigationTitle("Coucou link test")
             .refreshable { await link.refresh() }
+            .toolbar {
+                NavigationLink("Kit") { KitPreviewView() }
+            }
         }
     }
 
