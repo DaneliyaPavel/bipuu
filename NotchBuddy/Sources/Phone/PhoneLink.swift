@@ -15,6 +15,40 @@ struct PingItem: Identifiable {
     var delay: TimeInterval? { receivedAt.map { $0.timeIntervalSince(sentAt) } }
 }
 
+/// An agent session published by the Mac (SessionPublisher), as seen by the iPhone.
+struct SessionItem: Identifiable {
+    let id: String          // pill ID
+    let name: String
+    let color: String
+    let state: BotState
+    let stepIndex: Int
+    let steps: [String]
+    let needsApproval: Bool
+    let approvalCommand: String
+    let question: String
+    let finalLine: String
+    let updatedAt: Date
+    let macName: String
+
+    init(record: CKRecord) {
+        id = record["pillId"] as? String ?? record.recordID.recordName
+        name = record.encryptedValues["name"] as? String ?? ""
+        color = record["color"] as? String ?? "#C0C4CC"
+        state = BotState(rawValue: record["state"] as? String ?? "") ?? .idle
+        stepIndex = record["stepIndex"] as? Int ?? 0
+        steps = record.encryptedValues["steps"] as? [String] ?? []
+        needsApproval = record["needsApproval"] as? Bool ?? false
+        approvalCommand = record.encryptedValues["approvalCommand"] as? String ?? ""
+        question = record.encryptedValues["question"] as? String ?? ""
+        finalLine = record.encryptedValues["finalLine"] as? String ?? ""
+        updatedAt = record["updatedAt"] as? Date ?? record.modificationDate ?? .now
+        macName = record["macName"] as? String ?? ""
+    }
+
+    var pillName: String { PillCatalog.definition(for: id)?.name ?? id }
+    var currentStep: String? { steps.indices.contains(stepIndex) ? steps[stepIndex] : steps.last }
+}
+
 @MainActor
 @Observable
 final class PhoneLink {
@@ -30,10 +64,14 @@ final class PhoneLink {
 
     static let containerID = "iCloud.app.example.Coucou"
     static let zoneID = CKRecordZone.ID(zoneName: "Coucou", ownerName: CKCurrentUserDefaultName)
-    private static let subscriptionID = "coucou-zone-phone"
+    private static let subscriptionID = "coucou-zone-phone-silent"
+    /// Step 1's subscription showed a "Ping from your Mac" banner. A saved
+    /// subscription keeps its notification settings, so it is deleted rather than reused.
+    private static let oldSubscriptionID = "coucou-zone-phone"
 
     var status: Status = .starting
     var pings: [PingItem] = []
+    var sessions: [SessionItem] = []
     var lastPong: String?
     var pushError: String?
     var notificationsAllowed: Bool?
@@ -74,14 +112,13 @@ final class PhoneLink {
 
     private func subscribe() async {
         let sub = CKDatabaseSubscription(subscriptionID: Self.subscriptionID)
+        // Silent: the Mac now writes on every session change, a banner each
+        // time would be noise. Real notifications come with step 7.
         let info = CKSubscription.NotificationInfo()
-        info.title = "Coucou"
-        info.alertBody = "Ping from your Mac"
-        info.soundName = "default"
         info.shouldSendContentAvailable = true
         sub.notificationInfo = info
         do {
-            _ = try await database.modifySubscriptions(saving: [sub], deleting: [])
+            _ = try await database.modifySubscriptions(saving: [sub], deleting: [Self.oldSubscriptionID])
             subscribed = true
         } catch {
             status = .failed("Subscription: \(error.localizedDescription)")
@@ -100,6 +137,10 @@ final class PhoneLink {
                 let changes = try await database.recordZoneChanges(inZoneWith: Self.zoneID, since: changeToken)
                 for (_, result) in changes.modificationResultsByID {
                     if case .success(let mod) = result, add(mod.record) { gotNew = true }
+                }
+                for deletion in changes.deletions where deletion.recordType == "Session" {
+                    sessions.removeAll { "session-\($0.id)" == deletion.recordID.recordName }
+                    gotNew = true
                 }
                 changeToken = changes.changeToken
                 more = changes.moreComing
@@ -120,6 +161,13 @@ final class PhoneLink {
     }
 
     private func add(_ record: CKRecord) -> Bool {
+        if record.recordType == "Session" {
+            let item = SessionItem(record: record)
+            sessions.removeAll { $0.id == item.id }
+            sessions.append(item)
+            sessions.sort { $0.updatedAt > $1.updatedAt }
+            return true
+        }
         guard record.recordType == "Ping",
               !pings.contains(where: { $0.id == record.recordID }) else { return false }
         pings.append(PingItem(
