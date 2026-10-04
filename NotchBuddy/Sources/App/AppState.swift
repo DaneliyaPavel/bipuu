@@ -41,6 +41,11 @@ final class AppState: ObservableObject {
     // Pinned (alerts that stay open, never auto-close)
     var isPinned: Bool = false
 
+    // Keyboard navigation — index of the selected item within the current card's list (nil = none)
+    @Published var cardSelection: Int? = nil
+    // Number of navigable items in the card currently on screen (0 = no list)
+    @Published var cardItemCount: Int = 0
+
     // Upload progress (0-1) — set to 1.0 only at completion; animation is time-based
     @Published var uploadProgress: Double = 0
 
