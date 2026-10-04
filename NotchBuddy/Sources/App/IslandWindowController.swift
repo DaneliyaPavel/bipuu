@@ -405,6 +405,18 @@ final class IslandWindowController: NSWindowController {
             self?.collapse()
         }
 
+        // Wardrobe open/close from desktop Mochi right-click (does NOT post .hookExpand)
+        NotificationCenter.default.addObserver(forName: .openWardrobeFromDesktop, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            if self.state.mode == .expanded && self.state.view == .wardrobe {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    self.state.view = .overview
+                }
+            } else {
+                self.expand(to: .wardrobe)
+            }
+        }
+
         // .botDizzy — posted by BotEngine.slap() on 3rd hit; show confused view + recover after 3.3s
         NotificationCenter.default.addObserver(forName: .botDizzy, object: nil, queue: .main) { [weak self] _ in
             self?.handleDizzy()
@@ -423,6 +435,8 @@ final class IslandWindowController: NSWindowController {
                 self.botHovering = false
                 // Drag only starts when clicking directly on the bot head
                 guard self.isBotHit(event.locationInWindow) else { return }
+                // Notch Mochi is invisible when on desktop — no drag, no slap
+                guard !self.state.mochiOnDesktop else { return }
                 self.attachDragStart = NSEvent.mouseLocation
                 // Post slap only when expanded
                 guard self.state.mode == .expanded else { return }
@@ -451,13 +465,38 @@ final class IslandWindowController: NSWindowController {
                 self.inAttachDrag = false
                 self.attachDragStart = nil
                 self.state.stateOverride = nil
-                self.hideDragGhost()
+
                 #if !APPSTORE
-                if let ctx = self.windowContextAtPoint(mouse) {
+                let windowCtx = self.windowContextAtPoint(mouse)
+                let inNotchZone = self.window?.frame.contains(mouse) == true
+
+                if let ctx = windowCtx {
+                    // Drop on a window → attach context as before
+                    self.hideDragGhost()
                     self.state.promptContext = ctx
                     SoundEngine.shared.play("approve")
                     NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.happy)
                     self.expand(to: .prompt)
+                } else if !inNotchZone {
+                    // Drop outside notch zone → install Mochi on the desktop.
+                    // Prevent hideDragGhost from closing the ghost panel so we can promote it.
+                    let ghost = self.dragGhostPanel
+                    self.dragGhostPanel = nil   // nil first so hideDragGhost skips close
+                    self.hideDragGhost()        // resets isDraggingBot, closes highlight panel
+                    DesktopMochiController.shared.install(ghostPanel: ghost, at: mouse)
+                } else {
+                    // Drop back in notch zone → Mochi returns to notch
+                    self.hideDragGhost()
+                }
+                #else
+                let inNotchZoneAS = self.window?.frame.contains(mouse) == true
+                if !inNotchZoneAS {
+                    let ghost = self.dragGhostPanel
+                    self.dragGhostPanel = nil
+                    self.hideDragGhost()
+                    DesktopMochiController.shared.install(ghostPanel: ghost, at: mouse)
+                } else {
+                    self.hideDragGhost()
                 }
                 #endif
             }
@@ -492,6 +531,7 @@ final class IslandWindowController: NSWindowController {
             guard let self else { return event }
             MainActor.assumeIsolated {
                 guard self.wasInIsland, self.isBotHit(event.locationInWindow) else { return }
+                guard !self.state.mochiOnDesktop else { return }
                 if self.state.mode == .expanded && self.state.view == .wardrobe {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                         self.state.view = .overview
@@ -680,7 +720,7 @@ final class IslandWindowController: NSWindowController {
 
     // MARK: - Window context at screen point (for drag-attach)
 
-    private func windowContextAtPoint(_ screenPoint: NSPoint) -> PromptContext? {
+    func windowContextAtPoint(_ screenPoint: NSPoint) -> PromptContext? {
         let screen = window?.screen ?? NSScreen.main
         // CGWindowList uses top-left origin; NSEvent.mouseLocation uses bottom-left
         let screenMaxY = screen?.frame.maxY ?? NSScreen.main!.frame.maxY
@@ -898,6 +938,7 @@ extension Notification.Name {
     static let greetComplete    = Notification.Name("notchBuddy.greetComplete")
     static let greetingHover    = Notification.Name("notchBuddy.greetingHover")
     static let greetingInterrupt = Notification.Name("notchBuddy.greetingInterrupt")
+    static let openWardrobeFromDesktop = Notification.Name("notchBuddy.openWardrobeFromDesktop")
 }
 
 // MARK: - islandSize (takes real notch dimensions)
