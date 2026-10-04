@@ -26,6 +26,7 @@ struct SessionItem: Identifiable {
     let steps: [String]
     let needsApproval: Bool
     let approvalCommand: String
+    let approvalFingerprint: String
     let question: String
     let finalLine: String
     let cwd: String
@@ -41,6 +42,7 @@ struct SessionItem: Identifiable {
         steps = record.encryptedValues["steps"] as? [String] ?? []
         needsApproval = record["needsApproval"] as? Bool ?? false
         approvalCommand = record.encryptedValues["approvalCommand"] as? String ?? ""
+        approvalFingerprint = record["approvalFingerprint"] as? String ?? ""
         question = record.encryptedValues["question"] as? String ?? ""
         finalLine = record.encryptedValues["finalLine"] as? String ?? ""
         cwd = record.encryptedValues["cwd"] as? String ?? ""
@@ -84,6 +86,7 @@ final class PhoneLink {
     @ObservationIgnored private var changeToken: CKServerChangeToken?
     @ObservationIgnored private var firstFetchDone = false
     @ObservationIgnored private var subscribed = false
+    @ObservationIgnored private var approvalsSubscribed = false
     @ObservationIgnored private var fetching = false
 
     func start() async {
@@ -105,18 +108,22 @@ final class PhoneLink {
             return
         }
         if !subscribed { await subscribe() }
+        if subscribed && !approvalsSubscribed { await subscribeToApprovals() }
         _ = await fetchChanges()
+        await notifyNewApprovals()
     }
 
     /// Called on a CloudKit push. Returns true when new records arrived.
     func handlePush() async -> Bool {
-        await fetchChanges()
+        let gotNew = await fetchChanges()
+        await notifyNewApprovals()
+        return gotNew
     }
 
     private func subscribe() async {
         let sub = CKDatabaseSubscription(subscriptionID: Self.subscriptionID)
-        // Silent: the Mac now writes on every session change, a banner each
-        // time would be noise. Real notifications come with step 7.
+        // Silent: the Mac writes on every session change, a banner each time
+        // would be noise. Approvals have their own subscription below.
         let info = CKSubscription.NotificationInfo()
         info.shouldSendContentAvailable = true
         sub.notificationInfo = info
@@ -125,6 +132,47 @@ final class PhoneLink {
             subscribed = true
         } catch {
             status = .failed("Subscription: \(error.localizedDescription)")
+        }
+    }
+
+    /// A visible notification for each approval request the Mac sends
+    /// (ApprovalRelay), with Review and Deny actions. Kept apart from the
+    /// silent subscription so a failure here never stops the sessions.
+    private func subscribeToApprovals() async {
+        let approvals = CKQuerySubscription(recordType: "ApprovalRequest", predicate: NSPredicate(value: true),
+                                            subscriptionID: "coucou-approvals", options: [.firesOnRecordCreation])
+        approvals.zoneID = Self.zoneID
+        let alert = CKSubscription.NotificationInfo()
+        alert.title = "Coucou"
+        alert.alertBody = "An agent is waiting for your OK"
+        alert.soundName = "default"
+        alert.category = ApprovalActions.category
+        alert.shouldSendContentAvailable = true
+        alert.desiredKeys = ["fingerprint", "pillId"]
+        approvals.notificationInfo = alert
+        do {
+            _ = try await database.modifySubscriptions(saving: [approvals], deleting: [])
+            approvalsSubscribed = true
+            approvalsStatus = "On"
+        } catch {
+            // In the Development environment a query subscription needs the
+            // record type to exist: create it once with a throwaway record.
+            let seed = CKRecord(recordType: "ApprovalRequest",
+                                recordID: CKRecord.ID(recordName: "approval-schema", zoneID: Self.zoneID))
+            seed["pillId"] = ""
+            seed["fingerprint"] = ""
+            seed["createdAt"] = Date()
+            seed.encryptedValues["tool"] = ""
+            seed.encryptedValues["command"] = ""
+            do {
+                _ = try await database.modifyRecords(saving: [seed], deleting: [], savePolicy: .allKeys)
+                _ = try await database.modifyRecords(saving: [], deleting: [seed.recordID])
+                _ = try await database.modifySubscriptions(saving: [approvals], deleting: [])
+                approvalsSubscribed = true
+                approvalsStatus = "On (record type created)"
+            } catch {
+                approvalsStatus = "Failed: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -183,6 +231,115 @@ final class PhoneLink {
             receivedAt: firstFetchDone ? .now : nil
         ))
         return true
+    }
+
+    // MARK: Approval notifications (step 7)
+
+    /// State of the "coucou-approvals" subscription, shown on the link test screen.
+    var approvalsStatus = "Not set up yet"
+    @ObservationIgnored private var notifiedFingerprints: Set<String> = []
+
+    nonisolated static func approvalNotificationID(_ fingerprint: String) -> String { "approval-\(fingerprint)" }
+
+    /// The iCloud alert for an approval doesn't always come. The silent push
+    /// that updates the sessions does, so a new approval also gets a local
+    /// notification, unless the iCloud one came, or the app is open.
+    /// Notifications for requests no longer pending are removed.
+    private func notifyNewApprovals() async {
+        await removeAnsweredNotifications()
+        let fresh = sessions.filter {
+            $0.needsApproval && !$0.approvalFingerprint.isEmpty && !notifiedFingerprints.contains($0.approvalFingerprint)
+        }
+        guard !fresh.isEmpty else { return }
+        fresh.forEach { notifiedFingerprints.insert($0.approvalFingerprint) }
+        // The app is open: the request is on screen.
+        guard UIApplication.shared.applicationState != .active else { return }
+        // Give the iCloud alert a moment to land first, then check the request still waits.
+        try? await Task.sleep(for: .seconds(3))
+        _ = await fetchChanges()
+        let shown = await Self.shownApprovals().map { $0.fingerprint }
+        for session in fresh where !shown.contains(session.approvalFingerprint) {
+            guard pendingFingerprints.contains(session.approvalFingerprint),
+                  !iCloudAlerted.contains(session.approvalFingerprint) else { continue }
+            let content = UNMutableNotificationContent()
+            content.title = "\(session.pillName) · \(session.title)"
+            content.body = session.approvalCommand.isEmpty
+                ? "An agent is waiting for your OK"
+                : "Waiting for your OK: \(session.approvalCommand.prefix(140))"
+            content.sound = .default
+            content.categoryIdentifier = ApprovalActions.category
+            content.userInfo = ["fingerprint": session.approvalFingerprint, "pillId": session.id]
+            let request = UNNotificationRequest(identifier: Self.approvalNotificationID(session.approvalFingerprint),
+                                                content: content, trigger: nil)
+            try? await UNUserNotificationCenter.current().add(request)
+        }
+    }
+
+    /// Fingerprints of the requests the Mac is still waiting on.
+    private var pendingFingerprints: Set<String> {
+        Set(sessions.filter(\.needsApproval).map(\.approvalFingerprint).filter { !$0.isEmpty })
+    }
+
+    /// Fingerprints whose iCloud alert reached this iPhone (shown or tapped).
+    @ObservationIgnored private var iCloudAlerted: Set<String> = []
+
+    func noteICloudAlert(_ fingerprint: String) {
+        iCloudAlerted.insert(fingerprint)
+        notifiedFingerprints.insert(fingerprint)
+    }
+
+    /// Clears the banners of requests answered on the Mac, on the iPhone or expired.
+    private func removeAnsweredNotifications() async {
+        let pending = pendingFingerprints
+        let stale = await Self.shownApprovals().filter { !pending.contains($0.fingerprint) }.map { $0.id }
+        if !stale.isEmpty { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: stale) }
+    }
+
+    /// Approval notifications in Notification Center, local or from iCloud.
+    nonisolated static func shownApprovals() async -> [(id: String, fingerprint: String)] {
+        let delivered = await UNUserNotificationCenter.current().deliveredNotifications()
+        return delivered.compactMap { notification in
+            let request = notification.request
+            return approvalFingerprint(in: request).map { (request.identifier, $0) }
+        }
+    }
+
+    /// The approval fingerprint carried by a notification, local or from iCloud.
+    nonisolated static func approvalFingerprint(in request: UNNotificationRequest) -> String? {
+        let userInfo = request.content.userInfo
+        if let fingerprint = userInfo["fingerprint"] as? String { return fingerprint }
+        let note = CKNotification(fromRemoteNotificationDictionary: userInfo) as? CKQueryNotification
+        return note?.recordFields?["fingerprint"] as? String
+    }
+
+    // MARK: Decisions (step 7)
+
+    /// Decisions taken on this iPhone, newest first.
+    var history: [DecisionLog] = DecisionLog.load()
+
+    /// Set when the user taps "Review" on an approval notification.
+    var reviewFingerprint: String?
+
+    /// Sends allow / deny for one exact request. The Mac applies it only if the
+    /// fingerprint still matches the request it is waiting on.
+    func decide(_ decision: Decision, fingerprint: String, pillId: String, summary: String) async -> Bool {
+        let record = CKRecord(recordType: "Decision",
+                              recordID: CKRecord.ID(recordName: "decision-\(UUID().uuidString)", zoneID: Self.zoneID))
+        record["fingerprint"] = fingerprint
+        record["pillId"] = pillId
+        record["decision"] = decision.rawValue
+        record["decidedAt"] = Date()
+        record["deviceName"] = UIDevice.current.name
+        do {
+            _ = try await database.save(record)
+            history.insert(DecisionLog(decision: decision, pillId: pillId, summary: summary, date: .now), at: 0)
+            history = Array(history.prefix(50))
+            DecisionLog.save(history)
+            return true
+        } catch {
+            lastPong = "Decision failed: \(error.localizedDescription)"
+            return false
+        }
     }
 
     /// Hands the sessions to the widgets and asks them to redraw.
