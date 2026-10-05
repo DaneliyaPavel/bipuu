@@ -344,7 +344,8 @@ final class LiveActivityRelay {
             tone: MochiActivityState.tone(urgency: urgency),
             stepIndex: max(0, task.stepIndex),
             stepCount: task.steps.count,
-            others: others)
+            others: others,
+            approval: approval?.pillId == task.id ? approval.map(ApprovalRelay.fingerprint) : nil)
     }
 
     private func log(_ message: String) {

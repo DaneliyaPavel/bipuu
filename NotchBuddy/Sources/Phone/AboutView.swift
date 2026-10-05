@@ -6,6 +6,11 @@ import UIKit
 struct AboutView: View {
     let link: PhoneLink
     @State private var showGuide = false
+    @AppStorage(PhoneSettings.notifyDoneKey) private var notifyDone = true
+    @AppStorage(PhoneSettings.mochiSoundsKey) private var mochiSounds = true
+    @AppStorage(PhoneSettings.quietHoursKey) private var quietHours = false
+    @AppStorage(PhoneSettings.quietFromKey) private var quietFrom = 22 * 60
+    @AppStorage(PhoneSettings.quietToKey) private var quietTo = 8 * 60
 
     private var version: String {
         let info = Bundle.main.infoDictionary
@@ -51,6 +56,23 @@ struct AboutView: View {
                 Button("How to connect your Mac") { showGuide = true }
             }
 
+            Section {
+                Toggle("When an agent finishes or fails", isOn: $notifyDone)
+                Toggle("Mochi's sounds", isOn: $mochiSounds)
+                    .onChange(of: mochiSounds) { link.soundsChanged() }
+                Toggle("Quiet hours", isOn: $quietHours)
+                if quietHours {
+                    DatePicker("From", selection: time($quietFrom), displayedComponents: .hourAndMinute)
+                    DatePicker("To", selection: time($quietTo), displayedComponents: .hourAndMinute)
+                }
+            } header: {
+                Text("Notifications")
+            } footer: {
+                Text(quietHours
+                     ? "In the quiet hours, only what waits on you (a command to allow, a question) makes a sound. The rest arrives silently."
+                     : "Approvals and questions always notify you. Mochi's sounds are the ones he makes in your Mac's notch.")
+            }
+
             Section("Coucou") {
                 Link("Website", destination: URL(string: "https://louis-cfm.github.io/coucou/")!)
                 Link("Support", destination: URL(string: "https://louis-cfm.github.io/coucou/support.html")!)
@@ -66,6 +88,16 @@ struct AboutView: View {
         }
         .navigationTitle("Settings")
         .sheet(isPresented: $showGuide) { OnboardingView() }
+    }
+
+    /// Minutes after midnight, as a time for the pickers.
+    private func time(_ minutes: Binding<Int>) -> Binding<Date> {
+        Binding {
+            Calendar.current.startOfDay(for: .now).addingTimeInterval(TimeInterval(minutes.wrappedValue * 60))
+        } set: { date in
+            let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+            minutes.wrappedValue = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+        }
     }
 
     private var iCloudText: String {
@@ -106,7 +138,7 @@ struct OnboardingView: View {
                      icon: "icloud")
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Then, from here").font(.headline)
-                    Text("• Allow or deny a command, with Face ID\n• See what Claude did, file by file\n• Write or dictate the next instruction (GitHub version on the Mac)\n• Mochi in your Dynamic Island when your Mac is locked")
+                    Text("• Allow or deny a command, right from the Lock Screen\n• Answer Claude's questions\n• See what Claude did, file by file\n• Write or dictate the next instruction, or ask Siri (GitHub version on the Mac)\n• Mochi in your Dynamic Island when your Mac is locked")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

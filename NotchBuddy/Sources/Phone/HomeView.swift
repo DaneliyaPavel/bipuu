@@ -12,6 +12,7 @@ struct HomeView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     NotchHeader(sessions: link.sessions, status: link.status)
+                    TodayCard(link: link)
                     if link.sessions.isEmpty {
                         EmptySessionsView(status: link.status)
                     } else {
@@ -29,6 +30,9 @@ struct HomeView: View {
                         }
                         .padding(.vertical, 6)
                         .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 22))
+                        // Sessions move to their new place and change status smoothly.
+                        .animation(.spring(duration: 0.5, bounce: 0.2),
+                                   value: link.sessions.map { "\($0.id)|\($0.statusText)" })
                     }
                     ServicesList(services: link.services)
                 }
@@ -47,6 +51,12 @@ struct HomeView: View {
             // A widget tile was tapped: open that Mochi.
             .onOpenURL { url in
                 if let id = SharedSession.sessionId(from: url) { path = [id] }
+            }
+            // A notification, Siri or the Control Center asked for a session.
+            .onChange(of: link.openPillId) { _, id in
+                guard let id else { return }
+                path = [id]
+                link.openPillId = nil
             }
             .sheet(isPresented: Binding(get: { link.reviewFingerprint != nil },
                                         set: { if !$0 { link.reviewFingerprint = nil } })) {
@@ -101,11 +111,13 @@ struct NotchHeader: View {
                 Text(headline)
                     .font(.headline)
                     .foregroundStyle(.white)
+                    .contentTransition(.interpolate)
                 if let detail {
                     Text(detail)
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.6))
                         .lineLimit(1)
+                        .contentTransition(.interpolate)
                 }
             }
             Spacer(minLength: 0)
@@ -118,6 +130,7 @@ struct NotchHeader: View {
                 .strokeBorder(sessions.contains(where: \.isWaitingForYou) ? Color.orange.opacity(0.8) : Color.white.opacity(0.12),
                               lineWidth: 1.5)
         )
+        .animation(.spring(duration: 0.5, bounce: 0.2), value: "\(headline)|\(detail ?? "")")
     }
 
     private var headline: String {
@@ -161,6 +174,7 @@ struct SessionRow: View {
                 Text(session.statusText)
                     .font(.subheadline.weight(session.isWaitingForYou ? .semibold : .regular))
                     .foregroundStyle(session.statusColor)
+                    .contentTransition(.interpolate)
                 Text(session.updatedAt, style: .relative)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -195,5 +209,55 @@ struct EmptySessionsView: View {
         case .failed(let message): message
         case .ready: "No session yet. Start Claude Code, Cursor or Codex on your Mac."
         }
+    }
+}
+
+/// Today, as this iPhone saw it: turns finished, files and lines changed,
+/// commands you answered. Counted on the iPhone, never sent anywhere.
+struct TodayCard: View {
+    let link: PhoneLink
+
+    private var decisionsToday: Int {
+        link.history.filter { Calendar.current.isDateInToday($0.date) }.count
+    }
+
+    var body: some View {
+        let tally = link.archive.currentTally
+        if !tally.isEmpty || decisionsToday > 0 {
+            HStack(spacing: 0) {
+                stat("\(tally.turns)", tally.turns == 1 ? "turn" : "turns")
+                stat("\(tally.files)", tally.files == 1 ? "file" : "files")
+                VStack(spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text("+\(tally.added)").foregroundStyle(.green)
+                        Text("−\(tally.removed)").foregroundStyle(.red)
+                    }
+                    .font(.headline.monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    Text("lines").font(.caption2).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                stat("\(decisionsToday)", decisionsToday == 1 ? "OK given" : "OKs given")
+            }
+            .padding(.vertical, 12)
+            .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 22))
+            .overlay(alignment: .topLeading) {
+                Text("TODAY")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 10)
+                    .offset(y: -16)
+            }
+            .padding(.top, 10)
+        }
+    }
+
+    private func stat(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value).font(.headline.monospacedDigit())
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }

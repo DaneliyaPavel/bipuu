@@ -13,12 +13,14 @@ struct InstructionComposer: View {
     @State private var sentAt: Date?
     @State private var error: String?
     @State private var dictation = Dictation()
+    @State private var quickReplies = QuickReplies.load()
     @FocusState private var focused: Bool
 
     /// A bar at the bottom of the session screen, like a chat.
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if session.acceptsInstructions {
+                shortcuts
                 composer
                 status
             } else {
@@ -35,6 +37,53 @@ struct InstructionComposer: View {
         .overlay(alignment: .top) { Divider() }
         .onChange(of: dictation.transcript) { _, words in
             if dictation.isRecording { text = dictation.prefix + words }
+        }
+    }
+
+    /// Instructions you send often: a tap puts one in the field (it isn't sent
+    /// yet); + keeps what is typed; a long press removes one.
+    private var shortcuts: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(quickReplies, id: \.self) { reply in
+                    Button {
+                        text = reply
+                        focused = true
+                        Haptics.impact()
+                    } label: {
+                        Text(reply)
+                            .font(.footnote)
+                            .lineLimit(1)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color(white: 0.16), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            quickReplies.removeAll { $0 == reply }
+                            QuickReplies.save(quickReplies)
+                        } label: {
+                            Label("Remove", systemImage: "trash")
+                        }
+                    }
+                }
+                let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !typed.isEmpty && !quickReplies.contains(typed) {
+                    Button {
+                        quickReplies.append(typed)
+                        QuickReplies.save(quickReplies)
+                        Haptics.success()
+                    } label: {
+                        Label("Keep", systemImage: "plus")
+                            .font(.footnote.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.accentColor.opacity(0.25), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
 
@@ -207,5 +256,19 @@ final class Dictation: @unchecked Sendable {
         }
         guard speech else { return false }
         return await AVAudioApplication.requestRecordPermission()
+    }
+}
+
+/// The shortcuts above the instruction field, kept on this iPhone.
+enum QuickReplies {
+    private static let key = "quickReplies"
+    static let defaults = ["Continue", "Run the tests", "Fix the errors", "Commit the changes", "Explain what you changed"]
+
+    static func load() -> [String] {
+        UserDefaults.standard.stringArray(forKey: key) ?? defaults
+    }
+
+    static func save(_ replies: [String]) {
+        UserDefaults.standard.set(replies, forKey: key)
     }
 }

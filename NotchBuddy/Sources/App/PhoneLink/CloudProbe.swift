@@ -71,6 +71,7 @@ final class CloudProbe {
         NSApplication.shared.unregisterForRemoteNotifications()
         SessionPublisher.shared.stop()
         ApprovalRelay.shared.stop()
+        QuestionRelay.shared.stop()
         ServicePublisher.shared.stop()
         TurnRecorder.shared.stop()
         #if !APPSTORE
@@ -92,6 +93,7 @@ final class CloudProbe {
         NSApplication.shared.registerForRemoteNotifications()
         SessionPublisher.shared.start()
         ApprovalRelay.shared.start()
+        QuestionRelay.shared.start()
         ServicePublisher.shared.start()
         TurnRecorder.shared.start()
         #if !APPSTORE

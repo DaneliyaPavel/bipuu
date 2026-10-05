@@ -228,6 +228,15 @@ targets:
         type: group
       - path: PhoneAssets.xcassets
         buildPhase: resources
+      # Mochi's sounds for the iPhone's notifications.
+      - path: Resources/sounds/approval.wav
+        buildPhase: resources
+      - path: Resources/sounds/finish.wav
+        buildPhase: resources
+      - path: Resources/sounds/question.wav
+        buildPhase: resources
+      - path: Resources/sounds/error.wav
+        buildPhase: resources
     info:
       path: Resources/InfoPhone.plist
       properties:
@@ -242,8 +251,11 @@ targets:
         UIApplicationSupportsIndirectInputEvents: YES
         UIBackgroundModes:
           - remote-notification
+        # Portrait, except a diff opened full screen (PhoneAppDelegate decides).
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: NO
         NSFaceIDUsageDescription: "Coucou asks for Face ID before allowing a command from your iPhone."
         NSMicrophoneUsageDescription: "Coucou uses the microphone when you dictate an instruction for Claude Code."
@@ -295,6 +307,8 @@ targets:
       - path: Sources/Phone/SharedSessions.swift
       - path: Sources/Phone/MacStubs.swift
       - path: Sources/Phone/MochiActivityAttributes.swift
+      - path: Sources/Phone/OpenLeadMochiIntent.swift
+      - path: Sources/Phone/DenyApprovalIntent.swift
     info:
       path: Resources/InfoWidgets.plist
       properties:
@@ -309,6 +323,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.example.Coucou.Widgets
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"
         PRODUCT_NAME: CoucouWidgets
         INFOPLIST_FILE: Resources/InfoWidgets.plist
         IPHONEOS_DEPLOYMENT_TARGET: "18.0"

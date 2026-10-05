@@ -30,6 +30,9 @@ struct SessionItem: Identifiable {
     /// The Mac runs instructions sent from here for this session (GitHub build, switch on).
     let acceptsInstructions: Bool
     let question: String
+    /// The question's choices, when it can be answered from here.
+    let questionPayload: QuestionPayload?
+    let questionFingerprint: String
     let finalLine: String
     let cwd: String
     let updatedAt: Date
@@ -47,6 +50,8 @@ struct SessionItem: Identifiable {
         approvalFingerprint = record["approvalFingerprint"] as? String ?? ""
         acceptsInstructions = record["acceptsInstructions"] as? Bool ?? false
         question = record.encryptedValues["question"] as? String ?? ""
+        questionPayload = QuestionPayload.decode(record.encryptedValues["questionPayload"] as? String ?? "")
+        questionFingerprint = record["questionFingerprint"] as? String ?? ""
         finalLine = record.encryptedValues["finalLine"] as? String ?? ""
         cwd = record.encryptedValues["cwd"] as? String ?? ""
         updatedAt = record["updatedAt"] as? Date ?? record.modificationDate ?? .now
@@ -84,9 +89,13 @@ final class PhoneLink {
     var services: [String: ServiceSnapshot] = [:]
     /// The last turn of each session (prompt, actions, diffs, answer), by pill ID.
     var turns: [String: TurnSnapshot] = [:]
+    /// Turns seen before the latest one, and today's tally (this iPhone only).
+    var archive = TurnArchive.load()
     var lastPong: String?
     var pushError: String?
     var notificationsAllowed: Bool?
+    /// A session to open, from a notification, a shortcut or the Control Center.
+    var openPillId: String?
 
     @ObservationIgnored private let container = CKContainer(identifier: PhoneLink.containerID)
     @ObservationIgnored private var database: CKDatabase { container.privateCloudDatabase }
@@ -95,6 +104,8 @@ final class PhoneLink {
     @ObservationIgnored private var subscribed = false
     @ObservationIgnored private var approvalsSubscribed = false
     @ObservationIgnored private var fetching = false
+    /// Things to notify once the fetch is done (finished, failed, questions).
+    @ObservationIgnored private var events: [AgentNotifier.Event] = []
 
     func start() async {
         let center = UNUserNotificationCenter.current()
@@ -118,12 +129,14 @@ final class PhoneLink {
         if subscribed && !approvalsSubscribed { await subscribeToApprovals() }
         _ = await fetchChanges()
         await notifyNewApprovals()
+        await postEvents()
     }
 
     /// Called on a CloudKit push. Returns true when new records arrived.
     func handlePush() async -> Bool {
         let gotNew = await fetchChanges()
         await notifyNewApprovals()
+        await postEvents()
         return gotNew
     }
 
@@ -146,19 +159,23 @@ final class PhoneLink {
     /// (ApprovalRelay), with Review and Deny actions. Kept apart from the
     /// silent subscription so a failure here never stops the sessions.
     private func subscribeToApprovals() async {
+        // A saved subscription keeps its sound: one ID per sound, the other one is deleted.
+        let mochi = PhoneSettings.mochiSounds
         let approvals = CKQuerySubscription(recordType: "ApprovalRequest", predicate: NSPredicate(value: true),
-                                            subscriptionID: "coucou-approvals", options: [.firesOnRecordCreation])
+                                            subscriptionID: mochi ? "coucou-approvals-mochi" : "coucou-approvals",
+                                            options: [.firesOnRecordCreation])
         approvals.zoneID = Self.zoneID
         let alert = CKSubscription.NotificationInfo()
         alert.title = "Coucou"
         alert.alertBody = "An agent is waiting for your OK"
-        alert.soundName = "default"
-        alert.category = ApprovalActions.category
+        alert.soundName = mochi ? "approval.wav" : "default"
+        alert.category = NotificationActions.approvalCategory
         alert.shouldSendContentAvailable = true
         alert.desiredKeys = ["fingerprint", "pillId"]
         approvals.notificationInfo = alert
         do {
             _ = try await database.modifySubscriptions(saving: [approvals], deleting: [])
+            _ = try? await database.modifySubscriptions(saving: [], deleting: [mochi ? "coucou-approvals" : "coucou-approvals-mochi"])
             approvalsSubscribed = true
             approvalsStatus = "On"
         } catch {
@@ -232,6 +249,9 @@ final class PhoneLink {
         if record.recordType == TurnSnapshot.recordType {
             guard let payload = record.encryptedValues["payload"] as? String,
                   let turn = try? JSONDecoder().decode(TurnSnapshot.self, from: Data(payload.utf8)) else { return false }
+            let before = archive
+            archive.update(from: turns[turn.pillId], to: turn)
+            if archive.past != before.past || archive.today != before.today { archive.save() }
             turns[turn.pillId] = turn
             return false   // nothing for the widgets
         }
@@ -245,6 +265,7 @@ final class PhoneLink {
             let item = SessionItem(record: record)
             // Services used to come as sessions; they have their own records now.
             guard PillCatalog.isSession(item.id) else { return false }
+            if let event = AgentNotifier.event(for: item) { events.append(event) }
             sessions.removeAll { $0.id == item.id }
             sessions.append(item)
             sessions.sort { $0.updatedAt > $1.updatedAt }
@@ -296,8 +317,8 @@ final class PhoneLink {
             content.body = session.approvalCommand.isEmpty
                 ? "An agent is waiting for your OK"
                 : "Waiting for your OK: \(session.approvalCommand.prefix(140))"
-            content.sound = .default
-            content.categoryIdentifier = ApprovalActions.category
+            content.sound = PhoneSettings.sound("approval")
+            content.categoryIdentifier = NotificationActions.approvalCategory
             content.userInfo = ["fingerprint": session.approvalFingerprint, "pillId": session.id]
             let request = UNNotificationRequest(identifier: Self.approvalNotificationID(session.approvalFingerprint),
                                                 content: content, trigger: nil)
@@ -337,9 +358,52 @@ final class PhoneLink {
     /// The approval fingerprint carried by a notification, local or from iCloud.
     nonisolated static func approvalFingerprint(in request: UNNotificationRequest) -> String? {
         let userInfo = request.content.userInfo
+        // Finished and question notifications carry a "kind"; approvals don't.
+        guard userInfo["kind"] == nil else { return nil }
         if let fingerprint = userInfo["fingerprint"] as? String { return fingerprint }
         let note = CKNotification(fromRemoteNotificationDictionary: userInfo) as? CKQueryNotification
         return note?.recordFields?["fingerprint"] as? String
+    }
+
+    /// Finished, failed and question notifications, after a fetch (in the
+    /// background only; the app open shows it all already).
+    private func postEvents() async {
+        let pending = events
+        events = []
+        for event in pending {
+            let pillId: String
+            switch event {
+            case .finished(let session), .failed(let session), .question(let session, _): pillId = session.id
+            }
+            await AgentNotifier.post(event, turn: turns[pillId])
+        }
+    }
+
+    /// The approval subscription is made again with the new sound.
+    func soundsChanged() {
+        approvalsSubscribed = false
+        Task { await refresh() }
+    }
+
+    // MARK: Questions
+
+    /// Answers the question a session waits on. The Mac takes it within ~2 s,
+    /// only if it is still the same question and the picks are among its choices.
+    func answer(fingerprint: String, pillId: String, selections: [[String]]) async -> Bool {
+        let record = CKRecord(recordType: "Answer",
+                              recordID: CKRecord.ID(recordName: "answer-\(UUID().uuidString)", zoneID: Self.zoneID))
+        record["fingerprint"] = fingerprint
+        record["pillId"] = pillId
+        record["answeredAt"] = Date()
+        record["deviceName"] = UIDevice.current.name
+        record.encryptedValues["selections"] = QuestionPayload.encodeSelections(selections)
+        do {
+            _ = try await database.save(record)
+            return true
+        } catch {
+            lastPong = "Answer failed: \(error.localizedDescription)"
+            return false
+        }
     }
 
     // MARK: Instructions (step B)
@@ -392,10 +456,22 @@ final class PhoneLink {
         }
     }
 
+    /// Allow from the Live Activity or a notification, without opening the app
+    /// (the iPhone was unlocked by its owner: iOS asks for it first).
+    func allowFromOutside(fingerprint: String, pillId: String, from place: String) async -> Bool {
+        noteICloudAlert(fingerprint)
+        let command = sessions.first { $0.approvalFingerprint == fingerprint }?.approvalCommand ?? ""
+        let summary = command.isEmpty ? "Allowed from \(place)" : String(command.prefix(200))
+        let sent = await decide(.allow, fingerprint: fingerprint, pillId: pillId, summary: summary)
+        if sent { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Self.approvalNotificationID(fingerprint)]) }
+        return sent
+    }
+
     /// Hands the sessions to the widgets and asks them to redraw.
     private func updateWidgets() {
         SharedSessions.save(sessions.map(\.shared) + services.values.map(\.shared))
         WidgetCenter.shared.reloadAllTimelines()
+        ControlCenter.shared.reloadAllControls()
     }
 
     /// Writes a Pong linked to the latest Ping.
