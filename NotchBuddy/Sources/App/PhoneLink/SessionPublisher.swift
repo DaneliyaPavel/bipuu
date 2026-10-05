@@ -174,7 +174,8 @@ struct SessionSnapshot: Equatable {
     static func all(tasks: [AgentTask], approval: ApprovalInfo?,
                     question: AskQuestion?) -> [String: SessionSnapshot] {
         var result: [String: SessionSnapshot] = [:]
-        for task in tasks where task.source != .n8n {
+        // Services (Stripe, GitHub…) go through ServicePublisher, with their data.
+        for task in tasks where task.source != .n8n && PillCatalog.isSession(task.id) {
             let hasApproval = approval?.pillId == task.id
             let questionText = task.state == .question
                 ? (question?.questions.map(\.question).joined(separator: "\n") ?? "")
@@ -229,6 +230,12 @@ struct SessionSnapshot: Equatable {
         record["needsAnswer"] = !question.isEmpty
         record["updatedAt"] = Date()
         record["macName"] = Host.current().localizedName ?? ""
+        // Whether this Mac runs instructions sent from the iPhone (GitHub build, switch on).
+        #if APPSTORE
+        record["acceptsInstructions"] = false
+        #else
+        record["acceptsInstructions"] = InstructionRunner.isEnabled && (pillId == "integration_claude" || pillId == "agent_cursor")
+        #endif
         record.encryptedValues["name"] = name
         record.encryptedValues["steps"] = steps
         record.encryptedValues["cwd"] = cwd
