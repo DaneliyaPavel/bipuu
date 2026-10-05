@@ -489,6 +489,9 @@ struct IslandHeader: View {
                 if state.view == .overview && state.showPlanInNotch && state.planRelayInstalled {
                     ClaudePlanHeaderPill(state: state)
                 }
+                if state.view == .overview && state.showCodexPlanInNotch {
+                    ClaudePlanHeaderPill(state: state, codex: true)
+                }
                 #endif
                 HStack(spacing: 14) {
                     Button(action: {
@@ -555,25 +558,32 @@ struct TabButton: View {
 #if !APPSTORE
 struct ClaudePlanHeaderPill: View {
     @ObservedObject var state: AppState
+    var codex: Bool = false
     @State private var isHovered = false
 
     private var effectiveColor: String {
-        ClaudePlanGauge.color(for: state.claudePlanUsage.flatMap { ClaudePlanGauge.dominantPct($0) })
+        if codex { return CodexPlanGauge.color(state.codexPlanUsage) }
+        return ClaudePlanGauge.color(for: state.claudePlanUsage.flatMap { ClaudePlanGauge.dominantPct($0) })
     }
 
     private var label: String {
+        if codex { return CodexPlanGauge.pillLabel(state.codexPlanUsage) }
         guard let usage = state.claudePlanUsage,
               let pct = ClaudePlanGauge.dominantPct(usage) else { return "Claude —" }
         return "Claude \(Int(pct.rounded()))%"
     }
 
-    private var isActive: Bool { state.showingPlanDetail || isHovered }
+    private var isOpen: Bool { state.showingPlanDetail && state.planDetailIsCodex == codex }
+    private var isActive: Bool { isOpen || isHovered }
 
     var body: some View {
         Button(action: {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                state.showingPlanDetail.toggle()
+                let open = isOpen
+                state.planDetailIsCodex = codex
+                state.showingPlanDetail = !open
             }
+            if codex { state.refreshCodexPlanUsage() }
         }) {
             HStack(spacing: 4) {
                 Circle()
@@ -604,6 +614,7 @@ struct ClaudePlanHeaderPill: View {
         .onHover { h in
             withAnimation(.spring(response: 0.2, dampingFraction: 0.7)) { isHovered = h }
         }
+        .onAppear { if codex { state.refreshCodexPlanUsage() } }
     }
 }
 #endif
