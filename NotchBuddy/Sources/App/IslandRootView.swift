@@ -465,6 +465,15 @@ struct IslandContentView: View {
 struct IslandHeader: View {
     @ObservedObject var state: AppState
 
+    // Claude + Codex pills together: tighten the right side so it clears the notch
+    private var bothPlans: Bool {
+        #if !APPSTORE
+        return state.view == .overview && state.showPlanInNotch && state.planRelayInstalled && state.showCodexPlanInNotch
+        #else
+        return false
+        #endif
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             // Left: tab capsules
@@ -484,7 +493,7 @@ struct IslandHeader: View {
             Spacer()
 
             // Right: plan pill (GitHub build, home view only) + action icons
-            HStack(spacing: 8) {
+            HStack(spacing: bothPlans ? 5 : 8) {
                 #if !APPSTORE
                 if state.view == .overview && state.showPlanInNotch && state.planRelayInstalled {
                     ClaudePlanHeaderPill(state: state)
@@ -493,7 +502,7 @@ struct IslandHeader: View {
                     ClaudePlanHeaderPill(state: state, codex: true)
                 }
                 #endif
-                HStack(spacing: 14) {
+                HStack(spacing: bothPlans ? 10 : 14) {
                     Button(action: {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                             state.view = .settings
@@ -513,7 +522,7 @@ struct IslandHeader: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.trailing, 16)
+            .padding(.trailing, bothPlans ? 8 : 16)
         }
         .frame(maxHeight: .infinity)
     }
