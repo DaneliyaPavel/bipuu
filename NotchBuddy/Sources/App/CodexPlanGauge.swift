@@ -36,7 +36,7 @@ enum CodexPlanGauge {
     }
 
     private static func readRateLimits(codex: String) -> CodexPlanUsage? {
-        nonisolated(unsafe) let process = Process()
+        let process = Process()
         process.executableURL = URL(fileURLWithPath: codex)
         process.arguments = ["app-server"]
         var env = ProcessInfo.processInfo.environment
