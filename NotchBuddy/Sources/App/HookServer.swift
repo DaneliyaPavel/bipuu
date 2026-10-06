@@ -459,7 +459,7 @@ final class HookServer: @unchecked Sendable {
             if isExternalAgent { upsertExternalAgent(id: agentId, name: validAgent!) } else { upsertWorkspaceTask(id: agentId, projectName: projectName, cwd: cwd) }
             state.updateTask(id: agentId, state: .working)
             let input = payload["tool_input"] as? [String: Any] ?? [:]
-            let step = frenchStep(tool: tool, input: input)
+            let step = localizedStep(tool: tool, input: input)
             appendStep(id: agentId, step: step)
             nbLog("PreToolUse \(tool)")
 
@@ -968,27 +968,27 @@ final class HookServer: @unchecked Sendable {
         return aliases[name.lowercased()] ?? name
     }
 
-    // MARK: - French step labels
+    // MARK: - Localized step labels
 
-    private func frenchStep(tool: String, input: [String: Any]) -> String {
+    private func localizedStep(tool: String, input: [String: Any]) -> String {
         let labels: [String: String] = [
-            "Bash":        "Exécute",
-            "Read":        "Lit",
-            "Write":       "Écrit",
-            "Edit":        "Modifie",
-            "Glob":        "Cherche",
-            "Grep":        "Recherche",
-            "WebSearch":   "Recherche web",
-            "WebFetch":    "Récupère",
-            "TodoWrite":   "Tâches",
-            "Task":        "Agent",
-            "LS":          "Liste",
-            "MultiEdit":   "Modifie",
-            "NotebookEdit": "Notebook",
+            "Bash":         String(localized: "step.runs",       defaultValue: "Runs"),
+            "Read":         String(localized: "step.reads",      defaultValue: "Reads"),
+            "Write":        String(localized: "step.writes",     defaultValue: "Writes"),
+            "Edit":         String(localized: "step.edits",      defaultValue: "Edits"),
+            "Glob":         String(localized: "step.searches",   defaultValue: "Searches"),
+            "Grep":         String(localized: "step.searches",   defaultValue: "Searches"),
+            "WebSearch":    String(localized: "step.web-search", defaultValue: "Searches the web"),
+            "WebFetch":     String(localized: "step.fetches",    defaultValue: "Fetches"),
+            "TodoWrite":    String(localized: "step.tasks",      defaultValue: "Tasks"),
+            "Task":         String(localized: "step.agent",      defaultValue: "Agent"),
+            "LS":           String(localized: "step.lists",      defaultValue: "Lists"),
+            "MultiEdit":    String(localized: "step.edits",      defaultValue: "Edits"),
+            "NotebookEdit": String(localized: "step.notebook",   defaultValue: "Notebook"),
             // Codex tools
-            "apply_patch": "Modifie",
-            "update_plan": "Tâches",
-            "spawn_agent": "Agent",
+            "apply_patch":  String(localized: "step.edits",     defaultValue: "Edits"),
+            "update_plan":  String(localized: "step.tasks",     defaultValue: "Tasks"),
+            "spawn_agent":  String(localized: "step.agent",     defaultValue: "Agent"),
         ]
         var label = labels[tool] ?? tool
 
@@ -1029,19 +1029,19 @@ final class HookServer: @unchecked Sendable {
         return label
     }
 
-    /// Infers a French verb from a shell command's first word.
+    /// Infers a localized verb from a shell command's first word.
     private func bashVerb(_ command: String) -> String {
         let first = command.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
         switch first {
-        case "cat", "bat", "head", "tail", "less", "more", "nl": return "Lit"
-        case "rg", "grep", "find", "fd", "ls", "tree", "wc":    return "Cherche"
+        case "cat", "bat", "head", "tail", "less", "more", "nl": return String(localized: "step.reads",    defaultValue: "Reads")
+        case "rg", "grep", "find", "fd", "ls", "tree", "wc":    return String(localized: "step.searches", defaultValue: "Searches")
         default: break
         }
         let testRunners = ["pytest", "vitest", "jest", "npm test", "npm run test",
                            "cargo test", "go test", "swift test", "make test",
                            "xcodebuild test", "unittest"]
-        if testRunners.contains(where: { command.contains($0) }) { return "Teste" }
-        return "Exécute"
+        if testRunners.contains(where: { command.contains($0) }) { return String(localized: "step.tests", defaultValue: "Tests") }
+        return String(localized: "step.runs", defaultValue: "Runs")
     }
 
     // MARK: - Live diff helpers
