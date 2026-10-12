@@ -326,6 +326,7 @@ final class HookServer: @unchecked Sendable {
         installHookScript()
         if Self.recordingEnabled {
             recorder = EventRecorder.standard(supportDir: dir, inferTasks: Self.inferenceEnabled,
+                                              onWrite: { NotificationCenter.default.post(name: .workDataChanged, object: nil) },
                                               log: { appendAppLog("bipuu.log", $0) })
         }
         Thread.detachNewThread { self.serverThread() }

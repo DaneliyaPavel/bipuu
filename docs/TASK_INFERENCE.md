@@ -52,4 +52,4 @@ sessions then stay unattached.
 - Detached HEAD and non-repository directories group by directory only.
 - Project creation, task creation and assignment are separate writes (no cross-store transaction): a crash in between can leave an
   empty proposed task or a project with no sessions. Harmless; the session stays unattached.
-- No UI yet: nothing shows or confirms proposals. No merge or split of tasks.
+- Proposals are shown and confirmed in the [work view](WORK_VIEW.md). No merge or split of tasks.

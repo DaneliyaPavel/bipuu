@@ -364,5 +364,23 @@ await run("sanity: 2k tasks and 10k sessions list and filter quickly") {
     print("      (10k session writes \(String(format: "%.2f", write))s; list+filter \(String(format: "%.3f", read))s)")
 }
 
+await run("sanity: the work overview over 40 tasks, 80 sessions and 8k events builds quickly") {
+    let path = tempDB(); defer { removeDB(path) }
+    let d = try SQLiteDomainStore(path: path), e = try SQLiteEventStore(path: path)
+    try await d.save(Agent(id: AgentID("a"), kind: "k", displayName: "A"))
+    try await d.save(Project(id: ProjectID("p"), name: "P", createdAt: Date(timeIntervalSince1970: 0)))
+    for t in 0..<40 {
+        try await d.save(WorkTask(id: TaskID("t\(t)"), projectID: ProjectID("p"), title: "t\(t)", createdAt: Date(timeIntervalSince1970: Double(t))))
+        for s in 0..<2 { try await d.save(Session(id: SessionID("s\(t)-\(s)"), taskID: TaskID("t\(t)"), agentID: AgentID("a"), startedAt: Date(timeIntervalSince1970: Double(t)))) }
+    }
+    for i in 0..<8_000 { _ = try await e.append(ev("e\(i)", occ: Double(i), session: "s\(i % 40)-\(i % 2)", kind: i % 5 == 0 ? .promptSubmitted : .toolFinished)) }
+    let t0 = Date()
+    let overview = try await WorkOverviewBuilder(domain: d, events: e).build()
+    let seconds = Date().timeIntervalSince(t0)
+    try await check(overview.taskCount == 40 && overview.groups.count == 1)
+    try await check(seconds < 3, "overview took \(seconds)s")
+    print("      (overview of 40 tasks over 8k events: \(String(format: "%.3f", seconds))s)")
+}
+
 for p in tempPaths { removeDB(p) }
 finish()

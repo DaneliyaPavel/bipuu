@@ -10,7 +10,7 @@ enum IslandMode: String, CaseIterable {
 
 enum IslandView: String, CaseIterable {
     case overview, empty, approval, question, error, finished
-    case note, settings
+    case note, settings, work
 }
 
 // MARK: - Bot State
@@ -117,6 +117,7 @@ enum IslandConst {
         .finished:  ViewLayout(height: 160, botX: 62,  botY: nil, botDiameter: 58, agentMode: .column),
         .note:      ViewLayout(height: 160, botX: 60,  botY: nil, botDiameter: 50, agentMode: .column),
         .settings:  ViewLayout(height: 160, botX: 54,  botY: nil, botDiameter: 46, agentMode: .none),
+        .work:      ViewLayout(height: 160, botX: 54,  botY: nil, botDiameter: 46, agentMode: .none),
     ]
 
     // Project colors — keyed by lowercase display name or slug

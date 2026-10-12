@@ -84,6 +84,13 @@ public struct TaskSummary: Hashable, Sendable, Codable {
     public var lastEventAt: Date?
     public var needsAttention: Bool { pendingApprovalCount > 0 || openQuestionCount > 0 }
 
+    public init(taskID: TaskID, sessionCount: Int, workingSessionCount: Int, liveSessionCount: Int,
+                pendingApprovalCount: Int, openQuestionCount: Int, lastEventAt: Date?) {
+        self.taskID = taskID; self.sessionCount = sessionCount; self.workingSessionCount = workingSessionCount
+        self.liveSessionCount = liveSessionCount; self.pendingApprovalCount = pendingApprovalCount
+        self.openQuestionCount = openQuestionCount; self.lastEventAt = lastEventAt
+    }
+
     public static func rollup(taskID: TaskID, sessions: [SessionSummary]) -> TaskSummary {
         TaskSummary(
             taskID: taskID,

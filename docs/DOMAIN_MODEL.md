@@ -95,6 +95,7 @@ session later does not rewrite history; queries by task return what was attribut
 Current state is held by `DomainStore` (rules: [STORAGE.md](STORAGE.md)); history by `EventStore`.
 `SessionSummary` and `TaskSummary` are derived from them on read. Recommended payload key:
 `approvalId` on `approval.requested` / `approval.resolved`, which ties a request to its resolution.
+`WorkOverview` is a read model built from both stores for the [work view](WORK_VIEW.md).
 
 ## 7. Ordering
 

@@ -276,3 +276,86 @@ struct InferenceChecks {
         try await check(try await Projections(events: events, domain: domain).taskSummary(t).sessionCount == 1)
     }
 }
+
+
+struct OverviewChecks {
+    private func at(_ s: Double) -> Date { Date(timeIntervalSince1970: s) }
+
+    private func world() async throws -> (InMemoryDomainStore, InMemoryEventStore) {
+        let d = InMemoryDomainStore(), e = InMemoryEventStore()
+        try await d.save(Agent(id: AgentID("a"), kind: "k", displayName: "A"))
+        try await d.save(Project(id: ProjectID("p1"), name: "alpha", createdAt: at(1)))
+        try await d.save(Project(id: ProjectID("p2"), name: "beta", createdAt: at(2)))
+        return (d, e)
+    }
+    private func session(_ d: InMemoryDomainStore, _ id: String, task: String?) async throws {
+        try await d.save(Session(id: SessionID(id), taskID: task.map { TaskID($0) }, agentID: AgentID("a"), startedAt: at(1)))
+    }
+    private func event(_ e: InMemoryEventStore, _ id: String, _ t: Double, _ kind: EventKind, session: String, approval: String? = nil) async throws {
+        let payload: JSONValue = approval.map { .object([PayloadKey.approvalID: .string($0)]) } ?? .object([:])
+        _ = try await e.append(AgentEvent(id: EventID(id), occurredAt: at(t), receivedAt: at(t), sessionID: SessionID(session),
+                                          kind: kind, source: EventSource(adapter: "t"), payload: payload))
+    }
+
+    func emptyWorldIsEmpty() async throws {
+        let (d, e) = try await world()
+        let o = try await WorkOverviewBuilder(domain: d, events: e).build()
+        try await check(o.groups.isEmpty && o.unattachedSessionCount == 0 && o.taskCount == 0 && o.hiddenTaskCount == 0)
+    }
+
+    func ordersByAttentionThenActivityAndGroupsByProject() async throws {
+        let (d, e) = try await world()
+        try await d.save(WorkTask(id: TaskID("quiet"), projectID: ProjectID("p1"), title: "quiet", createdAt: at(1), updatedAt: at(10)))
+        try await d.save(WorkTask(id: TaskID("busy"), projectID: ProjectID("p1"), title: "busy", createdAt: at(1), updatedAt: at(10)))
+        try await d.save(WorkTask(id: TaskID("needs"), projectID: ProjectID("p2"), title: "needs", createdAt: at(1), updatedAt: at(5)))
+        try await d.save(WorkTask(id: TaskID("loose"), title: "loose", createdAt: at(1), updatedAt: at(7)))
+        for (s, t) in [("sq", "quiet"), ("sb", "busy"), ("sn", "needs"), ("sl", "loose")] { try await session(d, s, task: t) }
+        try await event(e, "1", 100, .promptSubmitted, session: "sb")
+        try await event(e, "2", 50, .toolFinished, session: "sq")
+        try await event(e, "3", 20, .approvalRequested, session: "sn", approval: "A")
+        let o = try await WorkOverviewBuilder(domain: d, events: e).build()
+        // The group with a task that needs the user comes first, even though its activity is oldest.
+        try await check(o.groups.map { $0.project?.name ?? "—" } == ["beta", "alpha", "—"], "\(o.groups.map { $0.project?.name ?? "—" })")
+        try await check(o.groups[1].tasks.map(\.task.title) == ["busy", "quiet"])
+        try await check(o.groups[0].tasks[0].needsAttention && o.groups[0].tasks[0].summary.pendingApprovalCount == 1)
+        try await check(o.needsAttentionCount == 1 && o.taskCount == 4)
+        try await check(o.groups[1].tasks[0].summary.workingSessionCount == 1 && o.groups[1].tasks[0].lastActivity == at(100))
+    }
+
+    func showsOnlyOpenTasksAndCountsUnattachedSessions() async throws {
+        let (d, e) = try await world()
+        try await d.save(WorkTask(id: TaskID("open"), projectID: ProjectID("p1"), title: "open", createdAt: at(1)))
+        try await d.save(WorkTask(id: TaskID("done"), projectID: ProjectID("p1"), title: "done", status: .completed, createdAt: at(1)))
+        try await d.save(WorkTask(id: TaskID("gone"), title: "gone", status: .abandoned, createdAt: at(1)))
+        try await session(d, "s1", task: "open"); try await session(d, "s2", task: nil); try await session(d, "s3", task: nil)
+        let o = try await WorkOverviewBuilder(domain: d, events: e).build()
+        try await check(o.groups.flatMap(\.tasks).map(\.task.title) == ["open"])
+        try await check(o.unattachedSessionCount == 2 && !o.isEmpty)
+    }
+
+    func marksProposalsAndHonoursTheLimit() async throws {
+        let (d, e) = try await world()
+        for i in 0..<5 {
+            try await d.save(WorkTask(id: TaskID("t\(i)"), projectID: ProjectID("p1"), title: "t\(i)",
+                                      origin: i == 0 ? .inferred : .explicit, createdAt: at(1), updatedAt: at(Double(i))))
+        }
+        let o = try await WorkOverviewBuilder(domain: d, events: e).build(limit: 3)
+        try await check(o.taskCount == 3 && o.hiddenTaskCount == 2, "\(o.taskCount)/\(o.hiddenTaskCount)")
+        // The most recently updated are kept: t4, t3, t2 (the proposal t0 is the oldest and drops out).
+        try await check(o.groups[0].tasks.map(\.task.title).sorted() == ["t2", "t3", "t4"])
+        let all = try await WorkOverviewBuilder(domain: d, events: e).build()
+        try await check(all.groups[0].tasks.first { $0.task.title == "t0" }?.isProposed == true)
+        try await check(try await WorkOverviewBuilder(domain: d, events: e).build(limit: 0).taskCount == 0)
+    }
+
+    func isReadOnly() async throws {
+        let (d, e) = try await world()
+        try await d.save(WorkTask(id: TaskID("t"), projectID: ProjectID("p1"), title: "t", createdAt: at(1)))
+        try await session(d, "s", task: "t")
+        try await event(e, "1", 5, .promptSubmitted, session: "s")
+        let before = (try await d.tasks(inProject: ProjectID("p1")), try await d.sessions(forTask: TaskID("t")), try await e.recentEvents(limit: 10))
+        _ = try await WorkOverviewBuilder(domain: d, events: e).build()
+        let after = (try await d.tasks(inProject: ProjectID("p1")), try await d.sessions(forTask: TaskID("t")), try await e.recentEvents(limit: 10))
+        try await check(before.0 == after.0 && before.1 == after.1 && before.2 == after.2)
+    }
+}

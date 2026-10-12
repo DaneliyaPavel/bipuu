@@ -439,6 +439,19 @@ struct IslandHeader: View {
                 HStack(spacing: 14) {
                     Button(action: {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            state.view = state.view == .work ? .overview : .work
+                        }
+                    }) {
+                        Image(systemName: state.view == .work ? "list.bullet.rectangle.fill" : "list.bullet.rectangle")
+                            .font(.system(size: 14))
+                            .foregroundColor(state.view == .work ? Color(hex: "#F5F6F8") : Color(hex: "#8E939C"))
+                    }
+                    .buttonStyle(.plain)
+                    .help(String(localized: "work.open", defaultValue: "Work"))
+                    .accessibilityLabel(String(localized: "work.open", defaultValue: "Work"))
+
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                             state.view = .settings
                         }
                     }) {
