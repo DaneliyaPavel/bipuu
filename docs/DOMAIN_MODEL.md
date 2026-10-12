@@ -42,7 +42,8 @@ Parents hold no child lists, so moving or merging work is a field update, never 
 - An `Approval` is pending until `decision` is set; only an explicit user action sets
   `allow/allowAlways/deny`. `withdrawn` records that the agent stopped waiting.
 - An inferred task (`origin == .inferred`) is provisional until the user confirms it.
-- Events are append-only and immutable; appending the same event ID twice is a no-op.
+- Events are append-only and immutable; appending an identical event twice is a no-op, appending a *different* event under a used ID is an error
+  (`eventIDCollision`). See [STORAGE.md](STORAGE.md).
 
 ## 4. Agent vs Host vs Environment
 
@@ -88,8 +89,9 @@ session later does not rewrite history; queries by task return what was attribut
 
 ## 7. Ordering
 
-Canonical order, used by every `EventStore` query: `occurredAt`, then `receivedAt`, then `id`
-(text order). It is deterministic for any event set on any store.
+Canonical order, used by every `EventStore` query: `occurredAt`, then `receivedAt` (both compared as whole
+Unix microseconds), then `id` (UTF-8 byte order). It is a deterministic presentation order for any event set
+on any store.
 
 It is **not** a causal or global total order: `occurredAt` comes from independent clocks (agents,
 remote hosts). Within one session from one adapter it normally matches reality; across sources it
@@ -103,10 +105,11 @@ events of the canonical order, ascending.
 - Envelope change: bump `schemaVersion`. Additive fields are optional. A reader accepts a *newer*
   version, reads the fields it knows and ignores the rest (`isFromFutureSchema`); a store that must not
   lose data keeps the raw payload bytes. Removing or retyping a field needs a new major handling path.
-- Storage: implement `EventStore` (async, `Sendable`). `InMemoryEventStore` is the executable spec.
+- Storage: implement `EventStore` (async, `Sendable`) and pass `EventStoreContract`. `InMemoryEventStore` and
+  `SQLiteEventStore` (see [STORAGE.md](STORAGE.md)) are the implementations.
 
 ## 9. Deferred on purpose
 
-SQLite store and migrations (Slice 2) · `Result` entity · task inference · project discovery ·
+Persistence of entities (Project/WorkTask/Session…) and projections · `Result` entity · task inference · project discovery ·
 AgentAdapter / HostAdapter protocols · HookServer producing `AgentEvent` · cost tracking ·
 CI/deploy models · event retention/compaction · cross-source clock correction · sync between machines.

@@ -2,11 +2,22 @@ import Foundation
 
 public enum AppendResult: Sendable, Equatable {
     case appended
-    /// An event with this id is already stored; nothing changed (appends are idempotent).
+    /// An identical event (same id, same content) is already stored; nothing changed.
     case duplicate
 }
 
-/// Append-only log of events. Implementations: `InMemoryEventStore` here; SQLite later.
+public enum EventStoreError: Error, Equatable, Sendable {
+    /// An event with this id is already stored but with different content. Never silently ignored:
+    /// it means an id was reused or an event was altered.
+    case eventIDCollision(EventID)
+}
+
+/// Append-only log of events. Implementations: `InMemoryEventStore` here; durable stores live in their own targets.
+///
+/// `append` contract:
+/// - id not present → stored, `.appended`
+/// - id present and the stored event is identical (`==`) → no-op, `.duplicate`
+/// - id present but content differs → throws `EventStoreError.eventIDCollision`, nothing changes
 ///
 /// Ordering contract: every query returns events in `AgentEvent.canonicalOrder` (ascending).
 /// `recentEvents(limit:)` returns the *last* `limit` events of that order, still ascending.
@@ -24,8 +35,11 @@ public actor InMemoryEventStore: EventStore {
 
     public init() {}
 
-    public func append(_ event: AgentEvent) -> AppendResult {
-        if byID[event.id] != nil { return .duplicate }
+    public func append(_ event: AgentEvent) throws -> AppendResult {
+        if let existing = byID[event.id] {
+            if existing == event { return .duplicate }
+            throw EventStoreError.eventIDCollision(event.id)
+        }
         byID[event.id] = event
         return .appended
     }

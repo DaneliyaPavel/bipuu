@@ -19,7 +19,10 @@ public struct Identifier<Entity>: Hashable, Sendable, Codable, Comparable, Custo
         var c = encoder.singleValueContainer()
         try c.encode(rawValue)
     }
-    public static func < (a: Identifier, b: Identifier) -> Bool { a.rawValue < b.rawValue }
+    /// UTF-8 byte order, so every store (in memory, a database BINARY collation) sorts ids identically.
+    public static func < (a: Identifier, b: Identifier) -> Bool {
+        a.rawValue.utf8.lexicographicallyPrecedes(b.rawValue.utf8)
+    }
     public static func == (a: Identifier, b: Identifier) -> Bool { a.rawValue == b.rawValue }
     public func hash(into h: inout Hasher) { h.combine(rawValue) }
 }

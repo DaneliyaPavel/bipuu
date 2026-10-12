@@ -44,7 +44,10 @@ jobs:
           done
 
       - name: BipuuCore checks
-        run: cd BipuuCore && swift run BipuuCoreChecks
+        run: |
+          cd BipuuCore
+          swift run BipuuCoreChecks
+          swift run BipuuSQLiteChecks
 
       - name: Build (unsigned)
         run: |
