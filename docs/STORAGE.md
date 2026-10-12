@@ -7,13 +7,20 @@ Domain concepts live in [DOMAIN_MODEL.md](DOMAIN_MODEL.md).
 
 | Piece | Where | Knows about |
 |---|---|---|
-| `EventStore` protocol, `InMemoryEventStore`, `AgentEvent` | `BipuuCore` | Foundation only |
-| `SQLiteEventStore` | `BipuuSQLite` | `BipuuCore` + system `sqlite3` |
-| Contract suite (`EventStoreContract`) | `BipuuChecking` | `BipuuCore` |
+| `EventStore`, `DomainStore` protocols, in-memory implementations, `AgentEvent`, projections | `BipuuCore` | Foundation only |
+| `SQLiteEventStore`, `SQLiteDomainStore` | `BipuuSQLite` | `BipuuCore` + system `sqlite3` |
+| Contract suites (`EventStoreContract`, `DomainStoreContract`) | `BipuuChecking` | `BipuuCore` |
 
 SQLite is the durable store. The abstraction belongs to the core; the physical implementation belongs
 to `BipuuSQLite`. The core never imports a storage engine (a check enforces it), and the app talks to
 the protocol, not to SQLite. No ORM and no third-party database library.
+
+## Events are history, the domain store is the present
+
+- `EventStore`: append-only history of what happened.
+- `DomainStore`: current state of Project, WorkTask, Agent, Host, Environment, Session and how they connect.
+- Projections (`SessionSummary`, `TaskSummary`) are **derived** from the two and never stored: one source of truth.
+  Both stores may live in the same database file (separate connections, WAL).
 
 ## Two different versions
 
@@ -48,7 +55,7 @@ Canonical order: `occurredAt`, then `receivedAt`, then `eventID`.
 - This is a **deterministic presentation order, not a causal ordering guarantee**: `occurredAt` comes from independent
   clocks. If a source sequence number appears later, it arrives in a new envelope schema version.
 
-## SQLite schema (database version 1)
+## SQLite schema, database version 1 (`EventStore`)
 
 Table `events`, one row per event, append-only:
 
@@ -80,15 +87,43 @@ that the decoder dropped before append are not preserved; unknown kinds and futu
 - `close()` is explicit and idempotent; later calls throw `.closed`. Dropping the store also closes the connection.
 - Committed events survive an abrupt exit (WAL); a second connection sees them.
 
+## SQLite schema, database version 2 (`DomainStore`)
+
+| Table | Key | Relations (real foreign keys) | Other columns |
+|---|---|---|---|
+| `projects` | `project_id` | | `created_at_us`, `raw_json` |
+| `agents`, `hosts`, `environments` | own id | | `raw_json` |
+| `tasks` | `task_id` | `project_id` → projects (nullable) | `status`, `created_at_us`, `raw_json` |
+| `sessions` | `session_id` | `task_id` → tasks (nullable), `agent_id` → agents, `host_id` → hosts (nullable), `environment_id` → environments (nullable) | `started_at_us`, `raw_json` |
+
+- Same pattern as events: full JSON plus the columns needed for relations and ordering, cross-checked on every read
+  (`corruptedRecord` on any disagreement).
+- Relations live on the child. No table lists its children, and `events` has **no** foreign keys: history may mention
+  entities that are not (or no longer) stored, and it is never rewritten when work is moved.
+- Two partial indexes only: `tasks(project_id, created_at_us, task_id)` and `sessions(task_id, started_at_us, session_id)`.
+  The "unassigned" and "unattached" lists scan their table; they are small and not worth an index yet.
+- `save` is an upsert. References are verified before writing (clear `missingReference` error naming the entity) and again
+  by the database. A rejected write changes nothing. There are no deletes yet.
+- `assign(session:to:)` and `move(task:to:at:)` are single transactions that touch one row.
+- Dates are stored as microsecond integers in the indexed columns and as exact epoch seconds inside the JSON.
+- Because the Swift standard `Foundation` on macOS also has a `Host` class, code that imports both must write
+  `BipuuCore.Host`.
+
+## Projections
+
+Computed on read by folding events in canonical order (rules in `SessionSummary.fold`):
+phase (`unknown/working/idle/failed/ended`), pending approvals (matched by payload `approvalId`), open question, counts and
+last activity. A `TaskSummary` is the roll-up of the sessions **currently** attached to the task (`Session.taskID`), not of
+the `taskID` stamped on old events, so reassigning a session moves its activity without rewriting history.
+
 ## Migrations
 
-`user_version` 0 → 1 creates the table, the indexes and sets the version in a single transaction.
+`user_version` 0 → 1 (events) and 1 → 2 (domain tables) each run in one transaction with their version bump; the steps are listed in `SQLiteConnection.migrations`, so a database from Slice 2 upgrades in place and keeps its events.
 The version is checked **before** any pragma or write: a database whose `user_version` is newer than this build
 supports throws `unsupportedDatabaseVersion(found:supported:)` and is left byte-for-byte untouched. There is no downgrade.
 Each future version adds one forward step.
 
 ## Deferred (next slices)
 
-Persistence of Project / WorkTask / Agent / Session / Host / Environment and projections over events ·
-HookServer writing events · task inference · adapters · UI · retention and compaction · encryption at rest ·
+Deleting entities · merging and splitting tasks · materialised or cached projections · HookServer writing events and entities · task inference · adapters · UI · retention and compaction · encryption at rest ·
 database file location and permissions (decided with the app integration) · multi-process access policy.

@@ -87,6 +87,12 @@ environmentID?, kind, source{adapter, adapterVersion?}, payload`.
 `taskID` and `projectID` on an event are the values known **when it was recorded**. Reassigning a
 session later does not rewrite history; queries by task return what was attributed at the time.
 
+## 6b. State and projections
+
+Current state is held by `DomainStore` (rules: [STORAGE.md](STORAGE.md)); history by `EventStore`.
+`SessionSummary` and `TaskSummary` are derived from them on read. Recommended payload key:
+`approvalId` on `approval.requested` / `approval.resolved`, which ties a request to its resolution.
+
 ## 7. Ordering
 
 Canonical order, used by every `EventStore` query: `occurredAt`, then `receivedAt` (both compared as whole
@@ -110,6 +116,6 @@ events of the canonical order, ascending.
 
 ## 9. Deferred on purpose
 
-Persistence of entities (Project/WorkTask/Session…) and projections · `Result` entity · task inference · project discovery ·
+Deleting entities, merging/splitting tasks · `Result` entity · task inference · project discovery ·
 AgentAdapter / HostAdapter protocols · HookServer producing `AgentEvent` · cost tracking ·
 CI/deploy models · event retention/compaction · cross-source clock correction · sync between machines.
