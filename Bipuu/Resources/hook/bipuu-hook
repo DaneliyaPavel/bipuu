@@ -1,0 +1,31 @@
+#!/bin/sh
+# Bipuu hook relay — always exits 0, never blocks Claude Code
+HOOK_DIR="$(dirname "$0")"
+out=""
+if xcode-select -p >/dev/null 2>&1; then
+    out=$(/usr/bin/python3 "$HOOK_DIR/bipuu-hook.py" "$@" 2>/dev/null)
+    rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+        out=""
+    fi
+fi
+if [ -n "$out" ]; then
+    printf '%s\n' "$out"
+else
+    # Copilot is fail-closed — must always output valid JSON even when python3 is absent or crashes.
+    _cop=0; _perm=0
+    for _a in "$@"; do
+        case "$_a" in
+            copilot) _cop=1 ;;
+            permissionRequest|PermissionRequest) _perm=1 ;;
+        esac
+    done
+    if [ "$_cop" -eq 1 ]; then
+        if [ "$_perm" -eq 1 ]; then
+            printf '{"permissionDecision":"ask"}\n'
+        else
+            printf '{}\n'
+        fi
+    fi
+fi
+exit 0

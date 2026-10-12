@@ -2,3 +2,5 @@
 target/
 Bipuu/Bipuu.xcodeproj/
 Bipuu/Resources/Info.plist
+__pycache__/
+*.pyc
