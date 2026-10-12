@@ -38,13 +38,28 @@ struct HistorySettingsTests {
         return rep
     }
 
+    static func renderBlank() -> NSBitmapImageRep? {
+        _ = NSApplication.shared
+        let size = NSSize(width: 520, height: 430)
+        let host = NSHostingView(rootView: Color(nsColor: .windowBackgroundColor).frame(width: size.width, height: size.height))
+        host.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        return rep
+    }
+
+    /// Dark pixels per 1x point grid: the same number on a 1x CI runner and a 2x laptop display.
     static func darkPixels(_ rep: NSBitmapImageRep) -> Int {
+        let scale = max(1, Double(rep.pixelsWide) / rep.size.width)
         var n = 0
         for y in 0..<rep.pixelsHigh { for x in 0..<rep.pixelsWide {
             guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
             if c.redComponent + c.greenComponent + c.blueComponent < 1.0 { n += 1 }       // text on a light window
         } }
-        return n
+        return Int(Double(n) / (scale * scale))
     }
 
     static func main() {
@@ -95,7 +110,10 @@ struct HistorySettingsTests {
         // The settings page draws (a blank picture would have almost no dark text pixels).
         let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : NSTemporaryDirectory()
         let page = render(to: out + "/history-settings.png")
-        check(page != nil && darkPixels(page!) > 1_500, "the page draws text (\(page.map(darkPixels) ?? 0) dark pixels)")
+        print("  (page: \(page.map(darkPixels) ?? 0) dark pixels per 1x grid, bitmap \(page?.pixelsWide ?? 0) px wide)")
+        check(page != nil && darkPixels(page!) > 600, "the page draws text (\(page.map(darkPixels) ?? 0) dark pixels)")
+        let blank = renderBlank()
+        check(blank != nil && darkPixels(blank!) < 20, "the check can tell a blank picture from a full one (\(blank.map(darkPixels) ?? -1))")
 
         if failures == 0 { print("History settings: all cases passed") } else { print("\(failures) failure(s)"); exit(1) }
     }
