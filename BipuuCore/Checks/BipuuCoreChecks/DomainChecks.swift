@@ -217,3 +217,90 @@ struct IsolationTests {
         }
     }
 }
+
+
+struct ProjectionChecks {
+    private func e(_ id: String, _ t: Double, _ kind: EventKind, session: String = "s", task: String? = nil,
+                   payload: JSONValue = .object([:])) -> AgentEvent {
+        AgentEvent(id: EventID(id), occurredAt: Date(timeIntervalSince1970: t), receivedAt: Date(timeIntervalSince1970: t),
+                   taskID: task.map { TaskID($0) }, sessionID: SessionID(session), kind: kind,
+                   source: EventSource(adapter: "test"), payload: payload)
+    }
+    private func approval(_ id: String) -> JSONValue { .object([PayloadKey.approvalID: .string(id)]) }
+    private func fold(_ events: [AgentEvent], session: String = "s") -> SessionSummary {
+        SessionSummary.fold(sessionID: SessionID(session), events: events)
+    }
+
+    func phases() async throws {
+        try await check(fold([]).phase == .unknown && fold([]).eventCount == 0 && fold([]).lastEventAt == nil)
+        try await check(fold([e("1", 1, .sessionStarted)]).phase == .idle)
+        try await check(fold([e("1", 1, .sessionStarted), e("2", 2, .promptSubmitted)]).phase == .working)
+        try await check(fold([e("1", 1, .promptSubmitted), e("2", 2, .toolStarted), e("3", 3, .turnFinished)]).phase == .idle)
+        try await check(fold([e("1", 1, .promptSubmitted), e("2", 2, .turnFailed)]).phase == .failed)
+        try await check(fold([e("1", 1, .promptSubmitted), e("2", 2, .turnInterrupted)]).phase == .idle)
+        // Ended is final: late tool events do not revive it; a new session.started does.
+        try await check(fold([e("1", 1, .sessionStarted), e("2", 2, .sessionEnded), e("3", 3, .toolStarted)]).phase == .ended)
+        try await check(fold([e("1", 1, .sessionEnded), e("2", 2, .sessionStarted)]).phase == .idle)
+        // Notices and unknown kinds count but change nothing.
+        let n = fold([e("1", 1, .promptSubmitted), e("2", 2, .notice), e("3", 3, "hologram.projected")])
+        try await check(n.phase == .working && n.eventCount == 3 && n.lastKind?.rawValue == "hologram.projected")
+        // Input order does not matter; other sessions' events are ignored.
+        let mixed = fold([e("3", 3, .turnFinished), e("1", 1, .promptSubmitted), e("x", 2, .sessionEnded, session: "other")])
+        try await check(mixed.phase == .idle && mixed.eventCount == 2)
+        try await check(mixed.firstEventAt == Date(timeIntervalSince1970: 1) && mixed.lastEventAt == Date(timeIntervalSince1970: 3))
+    }
+
+    func attention() async throws {
+        let open = fold([e("r1", 1, .approvalRequested, payload: approval("A1")), e("r2", 2, .approvalRequested, payload: approval("A2"))])
+        try await check(open.pendingApprovals == ["A1", "A2"] && open.needsAttention)
+        let one = fold([e("r1", 1, .approvalRequested, payload: approval("A1")), e("r2", 2, .approvalRequested, payload: approval("A2")),
+                        e("x", 3, .approvalResolved, payload: approval("A1"))])
+        try await check(one.pendingApprovals == ["A2"] && one.needsAttention)
+        let none = fold([e("r1", 1, .approvalRequested, payload: approval("A1")), e("x", 2, .approvalResolved, payload: approval("A1"))])
+        try await check(none.pendingApprovals.isEmpty && !none.needsAttention)
+        // Without an approval id the requesting event id is used; a resolution without an id resolves nothing.
+        let anon = fold([e("req", 1, .approvalRequested), e("res", 2, .approvalResolved)])
+        try await check(anon.pendingApprovals == ["req"])
+        // Ending the session drops pending approvals.
+        try await check(fold([e("r", 1, .approvalRequested, payload: approval("A")), e("z", 2, .sessionEnded)]).pendingApprovals.isEmpty)
+        // A question stays open until the next prompt or turn end.
+        try await check(fold([e("q", 1, .questionRequested)]).hasOpenQuestion)
+        try await check(!fold([e("q", 1, .questionRequested), e("p", 2, .promptSubmitted)]).hasOpenQuestion)
+        try await check(!fold([e("q", 1, .questionRequested), e("t", 2, .turnFinished)]).hasOpenQuestion)
+        try await check(fold([e("q", 1, .questionRequested), e("t", 2, .toolStarted)]).hasOpenQuestion)
+    }
+
+    func service() async throws {
+        let events = InMemoryEventStore(), domain = InMemoryDomainStore()
+        let agent = Agent(id: AgentID("a"), kind: "k", displayName: "A")
+        try await domain.save(agent)
+        try await domain.save(WorkTask(id: TaskID("t1"), title: "one", createdAt: Date(timeIntervalSince1970: 1)))
+        try await domain.save(WorkTask(id: TaskID("t2"), title: "two", createdAt: Date(timeIntervalSince1970: 1)))
+        for sid in ["s1", "s2"] {
+            try await domain.save(Session(id: SessionID(sid), taskID: TaskID("t1"), agentID: agent.id, startedAt: Date(timeIntervalSince1970: 1)))
+        }
+        // Events carry the task they were attributed to at recording time: t1.
+        _ = try await events.append(e("a1", 1, .promptSubmitted, session: "s1", task: "t1"))
+        _ = try await events.append(e("a2", 5, .approvalRequested, session: "s1", task: "t1", payload: approval("A")))
+        _ = try await events.append(e("b1", 3, .turnFinished, session: "s2", task: "t1"))
+        let proj = Projections(events: events, domain: domain)
+
+        let before = try await proj.taskSummary(TaskID("t1"))
+        try await check(before.sessionCount == 2 && before.workingSessionCount == 1 && before.liveSessionCount == 2)
+        try await check(before.pendingApprovalCount == 1 && before.needsAttention)
+        try await check(before.lastEventAt == Date(timeIntervalSince1970: 5))
+
+        // Reassign s1 to t2: the projection follows the session, the stored events are untouched.
+        try await domain.assign(session: SessionID("s1"), to: TaskID("t2"))
+        let t1 = try await proj.taskSummary(TaskID("t1")), t2 = try await proj.taskSummary(TaskID("t2"))
+        try await check(t1.sessionCount == 1 && !t1.needsAttention && t1.workingSessionCount == 0)
+        try await check(t2.sessionCount == 1 && t2.needsAttention && t2.workingSessionCount == 1)
+        try await check(try await events.events(forTask: TaskID("t1")).count == 3)   // history keeps its original attribution
+
+        // A task with no sessions is empty; an unknown task is an error; a session summary needs no domain entity.
+        try await domain.assign(session: SessionID("s2"), to: nil)
+        try await check(try await proj.taskSummary(TaskID("t1")) == TaskSummary.rollup(taskID: TaskID("t1"), sessions: []))
+        try await checkThrows(DomainStoreError.notFound(entity: "task", id: "ghost")) { _ = try await proj.taskSummary(TaskID("ghost")) }
+        try await check(try await proj.sessionSummary(SessionID("never-saved")).phase == .unknown)
+    }
+}

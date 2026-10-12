@@ -55,15 +55,21 @@ await EventStoreContract.runAll("SQLiteEventStore") {
     return try SQLiteEventStore(path: path)
 }
 
+await DomainStoreContract.runAll("SQLiteDomainStore") {
+    let path = tempDB()
+    tempPaths.append(path)
+    return try SQLiteDomainStore(path: path)
+}
+
 // MARK: 2. SQLite-specific behaviour
 
-await run("migration v0 -> v1 creates table, indexes, version, WAL") {
+await run("migration v0 -> v2 creates tables, indexes, version, WAL") {
     let path = tempDB(); defer { removeDB(path) }
     let s = try SQLiteEventStore(path: path)
-    try await check(scalarText(path, "PRAGMA user_version") == "1")
+    try await check(scalarText(path, "PRAGMA user_version") == "2")
     try await check(scalarText(path, "PRAGMA journal_mode") == "wal")
-    try await check(names(path, type: "table").contains("events"))
-    try await check(names(path, type: "index").isSuperset(of: ["idx_events_session", "idx_events_task", "idx_events_recent"]))
+    try await check(names(path, type: "table").isSuperset(of: ["events", "projects", "tasks", "sessions", "agents", "hosts", "environments"]))
+    try await check(names(path, type: "index").isSuperset(of: ["idx_events_session", "idx_events_task", "idx_events_recent", "idx_tasks_project", "idx_sessions_task"]))
     await s.close()
 }
 
@@ -95,7 +101,7 @@ await run("committed events are durable without close(); second connection sees 
 await run("database from a newer build is rejected and left untouched") {
     let path = tempDB(); defer { removeDB(path) }
     sql(path, "PRAGMA user_version = 99; CREATE TABLE marker(x);")
-    try await checkThrows(SQLiteEventStoreError.unsupportedDatabaseVersion(found: 99, supported: 1)) {
+    try await checkThrows(SQLiteEventStoreError.unsupportedDatabaseVersion(found: 99, supported: 2)) {
         _ = try SQLiteEventStore(path: path)
     }
     try await check(scalarText(path, "PRAGMA user_version") == "99")
@@ -212,6 +218,150 @@ await run("sanity: 10k appends, recent and per-session queries scale roughly lin
     try await check(batchTimes[1] < batchTimes[0] * 3 + 0.5, "batches \(batchTimes)")
     try await check(queryTime < 2.0, "queries \(queryTime)s")
     print("      (5k appends: \(String(format: "%.2f", batchTimes[0]))s then \(String(format: "%.2f", batchTimes[1]))s; queries \(String(format: "%.3f", queryTime))s)")
+}
+
+
+// MARK: 3. domain persistence, specific to SQLite
+
+func seedDomain(_ d: SQLiteDomainStore) async throws {
+    let t0 = Date(timeIntervalSince1970: 1)
+    try await d.save(Project(id: ProjectID("p"), name: "P", createdAt: t0))
+    try await d.save(Agent(id: AgentID("a"), kind: "k", displayName: "A"))
+    try await d.save(WorkTask(id: TaskID("t"), projectID: ProjectID("p"), title: "T", createdAt: t0))
+    try await d.save(Session(id: SessionID("s"), taskID: TaskID("t"), agentID: AgentID("a"), startedAt: t0))
+}
+
+await run("domain entities survive reopen and share the file with events") {
+    let path = tempDB(); defer { removeDB(path) }
+    do {
+        let d = try SQLiteDomainStore(path: path), e = try SQLiteEventStore(path: path)
+        try await seedDomain(d)
+        _ = try await e.append(ev("ev1", session: "s", task: "t"))
+        await d.close(); await e.close()
+    }
+    let d = try SQLiteDomainStore(path: path), e = try SQLiteEventStore(path: path)
+    try await check(try await d.sessions(forTask: TaskID("t")).map(\.id.rawValue) == ["s"])
+    try await check(try await d.task(TaskID("t"))?.projectID == ProjectID("p"))
+    let proj = Projections(events: e, domain: d)
+    try await check(try await proj.taskSummary(TaskID("t")).sessionCount == 1)
+}
+
+await run("v1 database (events only, written by Slice 2) migrates to v2 and keeps its events") {
+    let path = tempDB(); defer { removeDB(path) }
+    let old = ev("old", occ: 7, session: "s", task: "t")
+    let raw = String(decoding: try BipuuCoding.encoder().encode(old), as: UTF8.self).replacingOccurrences(of: "'", with: "''")
+    sql(path, """
+        CREATE TABLE events (event_id TEXT PRIMARY KEY NOT NULL, schema_version INTEGER NOT NULL, occurred_at_us INTEGER NOT NULL,
+          received_at_us INTEGER NOT NULL, project_id TEXT, task_id TEXT, session_id TEXT NOT NULL, agent_id TEXT, host_id TEXT,
+          environment_id TEXT, event_kind TEXT NOT NULL, source TEXT NOT NULL, raw_json BLOB NOT NULL);
+        CREATE INDEX idx_events_session ON events (session_id, occurred_at_us, received_at_us, event_id);
+        CREATE INDEX idx_events_task ON events (task_id, occurred_at_us, received_at_us, event_id) WHERE task_id IS NOT NULL;
+        CREATE INDEX idx_events_recent ON events (occurred_at_us, received_at_us, event_id);
+        INSERT INTO events VALUES ('old', 1, 7000000, 7000000, NULL, 't', 's', NULL, NULL, NULL, 'notice', 'contract', CAST('\(raw)' AS BLOB));
+        PRAGMA user_version = 1;
+        """)
+    let e = try SQLiteEventStore(path: path)
+    try await check(scalarText(path, "PRAGMA user_version") == "2")
+    try await check(try await e.recentEvents(limit: 5) == [old])
+    let d = try SQLiteDomainStore(path: path)
+    try await seedDomain(d)
+    try await check(try await d.project(ProjectID("p"))?.name == "P")
+}
+
+await run("the schema itself enforces relations (foreign keys), not only the store code") {
+    let path = tempDB(); defer { removeDB(path) }
+    let d = try SQLiteDomainStore(path: path)
+    try await seedDomain(d)
+    let rejected = withDB(path) { db -> Bool in
+        sqlite3_exec(db, "PRAGMA foreign_keys = ON", nil, nil, nil)
+        let bad = ["INSERT INTO sessions VALUES ('x', 'ghost', 'a', NULL, NULL, 1, x'7B7D')",
+                   "INSERT INTO sessions VALUES ('x', NULL, 'ghost', NULL, NULL, 1, x'7B7D')",
+                   "INSERT INTO tasks VALUES ('x', 'ghost', 'open', 1, x'7B7D')",
+                   "DELETE FROM tasks WHERE task_id = 't'"]          // a task with sessions cannot vanish
+        return bad.allSatisfy { sqlite3_exec(db, $0, nil, nil, nil) != SQLITE_OK }
+    }
+    try await check(rejected)
+}
+
+await run("corrupted or contradictory domain rows are explicit errors") {
+    let cases: [(String, @Sendable (SQLiteDomainStore) async throws -> Void)] = [
+        ("UPDATE sessions SET raw_json = x'7B7D'", { _ = try await $0.session(SessionID("s")) }),
+        ("UPDATE sessions SET raw_json = x'FFFE'", { _ = try await $0.sessions(forTask: TaskID("t")) }),
+        ("UPDATE sessions SET task_id = NULL", { _ = try await $0.session(SessionID("s")) }),
+        ("UPDATE sessions SET agent_id = 'other'", { _ = try await $0.session(SessionID("s")) }),
+        ("UPDATE sessions SET host_id = 'h'", { _ = try await $0.session(SessionID("s")) }),
+        ("UPDATE sessions SET environment_id = 'e'", { _ = try await $0.session(SessionID("s")) }),
+        ("UPDATE projects SET created_at_us = 9", { _ = try await $0.projects() }),
+        ("UPDATE sessions SET started_at_us = 5", { _ = try await $0.session(SessionID("s")) }),
+        ("UPDATE tasks SET status = 'abandoned'", { _ = try await $0.task(TaskID("t")) }),
+        ("UPDATE tasks SET project_id = NULL", { _ = try await $0.unassignedTasks() }),
+        ("UPDATE projects SET raw_json = x''", { _ = try await $0.projects() }),
+        ("UPDATE agents SET raw_json = x'00'", { _ = try await $0.agent(AgentID("a")) }),
+    ]
+    for (mutation, read) in cases {
+        let path = tempDB(); defer { removeDB(path) }
+        let d = try SQLiteDomainStore(path: path)
+        try await seedDomain(d)
+        sql(path, mutation)
+        do { try await read(d); try await check(false, "no error after: \(mutation)") }
+        catch let e as SQLiteStoreError { if case .corruptedRecord = e { try await check(true) } else { try await check(false, "\(mutation): \(e)") } }
+        await d.close()
+    }
+}
+
+await run("event and domain stores write the same file concurrently without errors") {
+    let path = tempDB(); defer { removeDB(path) }
+    let d = try SQLiteDomainStore(path: path), e = try SQLiteEventStore(path: path)
+    try await seedDomain(d)
+    try await withThrowingTaskGroup(of: Void.self) { g in
+        for i in 0..<100 {
+            g.addTask { _ = try await e.append(ev("c\(i)", occ: Double(i), session: "s", task: "t")) }
+            g.addTask { try await d.save(WorkTask(id: TaskID("t\(i)"), projectID: ProjectID("p"), title: "x", createdAt: Date(timeIntervalSince1970: Double(i)))) }
+            g.addTask { try await d.assign(session: SessionID("s"), to: TaskID("t")) }
+        }
+        try await g.waitForAll()
+    }
+    try await check(scalarText(path, "SELECT count(*) FROM events") == "100")
+    try await check(scalarText(path, "SELECT count(*) FROM tasks") == "101")
+}
+
+await run("domain queries use their indexes; closed domain store fails explicitly") {
+    let path = tempDB(); defer { removeDB(path) }
+    let d = try SQLiteDomainStore(path: path)
+    try await seedDomain(d)
+    func plan(_ q: String) -> String {
+        withDB(path) { db in
+            var st: OpaquePointer?
+            sqlite3_prepare_v2(db, "EXPLAIN QUERY PLAN " + q, -1, &st, nil); defer { sqlite3_finalize(st) }
+            var out = ""
+            while sqlite3_step(st) == SQLITE_ROW { out += String(cString: sqlite3_column_text(st, 3)) + ";" }
+            return out
+        }
+    }
+    let p1 = plan("SELECT * FROM tasks WHERE project_id = 'p' ORDER BY created_at_us, task_id")
+    let p2 = plan("SELECT * FROM sessions WHERE task_id = 't' ORDER BY started_at_us, session_id")
+    try await check(p1.contains("idx_tasks_project") && !p1.contains("TEMP B-TREE"), p1)
+    try await check(p2.contains("idx_sessions_task") && !p2.contains("TEMP B-TREE"), p2)
+    await d.close(); await d.close()
+    try await checkThrows(SQLiteStoreError.closed) { _ = try await d.projects() }
+}
+
+await run("sanity: 2k tasks and 10k sessions list and filter quickly") {
+    let path = tempDB(); defer { removeDB(path) }
+    let d = try SQLiteDomainStore(path: path)
+    try await d.save(Project(id: ProjectID("p"), name: "P", createdAt: Date(timeIntervalSince1970: 0)))
+    try await d.save(Agent(id: AgentID("a"), kind: "k", displayName: "A"))
+    for i in 0..<2_000 { try await d.save(WorkTask(id: TaskID("t\(i)"), projectID: ProjectID("p"), title: "x", createdAt: Date(timeIntervalSince1970: Double(i)))) }
+    let t0 = Date().timeIntervalSince1970
+    for i in 0..<10_000 { try await d.save(Session(id: SessionID("s\(i)"), taskID: TaskID("t\(i % 2_000)"), agentID: AgentID("a"), startedAt: Date(timeIntervalSince1970: Double(i)))) }
+    let write = Date().timeIntervalSince1970 - t0
+    let t1 = Date().timeIntervalSince1970
+    let n = try await d.tasks(inProject: ProjectID("p")).count
+    let five = try await d.sessions(forTask: TaskID("t7")).count
+    let read = Date().timeIntervalSince1970 - t1
+    try await check(n == 2_000 && five == 5)
+    try await check(write < 30 && read < 2, "write \(write)s read \(read)s")
+    print("      (10k session writes \(String(format: "%.2f", write))s; list+filter \(String(format: "%.3f", read))s)")
 }
 
 for p in tempPaths { removeDB(p) }
