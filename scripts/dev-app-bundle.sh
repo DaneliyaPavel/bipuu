@@ -11,7 +11,11 @@ SDK="/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"
 [ -d "$SDK" ] || SDK="$(xcrun --show-sdk-path)"
 APP="$OUT/Bipuu.app"
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+# The domain core and its SQLite storage are separate Swift modules, as in the Xcode project.
+MODS="$OUT/modules"
+scripts/build-core-modules.sh "$MODS"
 ( cd Bipuu && swiftc -parse-as-library -O -swift-version 6 -target arm64-apple-macos15.0 -sdk "$SDK" \
+    -I "$MODS" -L "$MODS" -lBipuuCore -lBipuuSQLite \
     $(find Sources/App Sources/BipuuKit -name '*.swift') -o "$APP/Contents/MacOS/Bipuu" 2>&1 | grep -E 'error' || true )
 cp -R Bipuu/Resources/hook "$APP/Contents/Resources/hook"
 cat > "$APP/Contents/Info.plist" <<'PLIST'

@@ -32,6 +32,12 @@ settings:
       CODE_SIGN_IDENTITY: "Developer ID Application"
       OTHER_CODE_SIGN_FLAGS: "--timestamp"
 
+# The platform-neutral domain core and its SQLite storage: a local Swift package, so the app and the
+# standalone checks build the very same sources.
+packages:
+  BipuuCore:
+    path: ../BipuuCore
+
 schemes:
   Bipuu:
     build:
@@ -46,6 +52,11 @@ targets:
   Bipuu:
     type: application
     platform: macOS
+    dependencies:
+      - package: BipuuCore
+        product: BipuuCore
+      - package: BipuuCore
+        product: BipuuSQLite
     sources:
       - path: Sources
         type: group

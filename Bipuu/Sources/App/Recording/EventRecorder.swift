@@ -1,0 +1,171 @@
+import Foundation
+import BipuuCore
+import BipuuSQLite
+
+/// Writes normalised hook events and the sessions behind them into the local database.
+///
+/// Recording is strictly off the hook path: `submit` only places the item on a bounded queue and
+/// returns (microseconds); a single background consumer does the database work. It can never delay
+/// or change what the agent sees. If the database cannot be opened (for example it was written by a
+/// newer Bipuu) recording switches itself off for the rest of the run and the app carries on.
+final class EventRecorder: Sendable {
+    private enum Message: Sendable {
+        case hook(RecordedHook)
+        case flush(CheckedContinuation<Void, Never>)
+    }
+
+    /// Items waiting for the consumer. Past this, the oldest are dropped (and counted).
+    static let queueLimit = 1_024
+
+    private let continuation: AsyncStream<Message>.Continuation
+    private let consumer: Task<Void, Never>
+    private let counters = Counters()
+
+    final class Counters: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _dropped = 0, _failed = 0, _recorded = 0
+        var dropped: Int { lock.withLock { _dropped } }
+        var failed: Int { lock.withLock { _failed } }
+        var recorded: Int { lock.withLock { _recorded } }
+        func drop() { lock.withLock { _dropped += 1 } }
+        func fail() { lock.withLock { _failed += 1 } }
+        func record() { lock.withLock { _recorded += 1 } }
+    }
+
+    /// `databasePath` is opened lazily on the first item, so starting the app never waits for the disk.
+    init(databasePath: String, log: @escaping @Sendable (String) -> Void = { _ in }) {
+        let (stream, continuation) = AsyncStream<Message>.makeStream(bufferingPolicy: .bufferingNewest(Self.queueLimit))
+        self.continuation = continuation
+        let counters = counters
+        consumer = Task.detached(priority: .utility) {
+            var sink: Sink?
+            var disabled = false
+            for await message in stream {
+                switch message {
+                case .flush(let done): done.resume()
+                case .hook(let item):
+                    guard !disabled else { continue }
+                    do {
+                        if sink == nil { sink = try Sink(path: databasePath) }
+                        try await sink?.write(item)
+                        counters.record()
+                    } catch {
+                        counters.fail()
+                        if sink == nil {
+                            disabled = true
+                            log("Event recording disabled: cannot open the database (\(Self.describe(error)))")
+                        } else {
+                            log("Event recording failed for one event (\(Self.describe(error)))")
+                        }
+                    }
+                }
+            }
+            await sink?.close()
+        }
+    }
+
+    deinit { continuation.finish() }
+
+    /// Never blocks, never throws.
+    func submit(_ item: RecordedHook) {
+        settle(continuation.yield(.hook(item)))
+    }
+
+    /// Waits until everything submitted before this call has been written. For tests and shutdown.
+    func flush() async {
+        await withCheckedContinuation { c in
+            let result = continuation.yield(.flush(c))
+            if case .terminated = result { c.resume() }   // already stopped: nothing to wait for
+            settle(result)
+        }
+    }
+
+    /// Finishes the queue and waits for the consumer (closes the database).
+    func stop() async {
+        continuation.finish()
+        await consumer.value
+    }
+
+    /// The queue is bounded and keeps the newest: a full queue pushes its oldest item out. That item is
+    /// counted if it was an event, and released if it was somebody waiting in `flush()`.
+    private func settle(_ result: AsyncStream<Message>.Continuation.YieldResult) {
+        guard case .dropped(let old) = result else { return }
+        switch old {
+        case .hook: counters.drop()
+        case .flush(let waiting): waiting.resume()
+        }
+    }
+
+    var droppedCount: Int { counters.dropped }
+    var failedCount: Int { counters.failed }
+    var recordedCount: Int { counters.recorded }
+
+    // MARK: Default location
+
+    /// `BIPUU_EVENT_DB` overrides the path (used by the end-to-end script so it never touches real data).
+    static func defaultDatabasePath(supportDir: URL) -> String {
+        if let p = ProcessInfo.processInfo.environment["BIPUU_EVENT_DB"], !p.isEmpty { return p }
+        return supportDir.appendingPathComponent("bipuu.sqlite").path
+    }
+
+    /// Names only: never put event content into a log line.
+    private static func describe(_ error: Error) -> String {
+        if let e = error as? SQLiteStoreError {
+            switch e {
+            case .unsupportedDatabaseVersion(let f, let s): return "database version \(f) is newer than supported \(s)"
+            case .database(let code, _): return "sqlite code \(code)"
+            case .corruptedEvent, .corruptedRecord: return "stored data is inconsistent"
+            case .closed: return "closed"
+            }
+        }
+        return String(describing: type(of: error))
+    }
+
+    // MARK: Consumer state
+
+    /// Owns the two stores and the "already saved" caches. Used only by the consumer task.
+    private actor Sink {
+        private let events: SQLiteEventStore
+        private let domain: SQLiteDomainStore
+        private var agents = Set<AgentID>(), hosts = Set<HostID>(), sessions = Set<SessionID>()
+
+        init(path: String) throws {
+            // Create the file ourselves, owner-only, before SQLite does: its WAL files inherit the mode.
+            if !FileManager.default.fileExists(atPath: path) {
+                let dir = (path as NSString).deletingLastPathComponent
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true,
+                                                         attributes: [.posixPermissions: 0o700])
+                FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
+            }
+            events = try SQLiteEventStore(path: path)
+            domain = try SQLiteDomainStore(path: path)
+        }
+
+        func write(_ item: RecordedHook) async throws {
+            let id = item.identity
+            if !agents.contains(id.agent.id) { try await domain.save(id.agent); agents.insert(id.agent.id) }
+            if let host = id.host, !hosts.contains(host.id) { try await domain.save(host); hosts.insert(host.id) }
+            try await ensureSession(id, startedAt: item.event.occurredAt)
+            if item.event.kind == .sessionEnded, var s = try await domain.session(id.sessionID), s.endedAt == nil {
+                s.endedAt = item.event.occurredAt     // read-modify-write keeps any task assignment
+                try await domain.save(s)
+            }
+            _ = try await events.append(item.event)
+        }
+
+        /// Creates the session on first sight; never overwrites one that exists (it may have a task by now).
+        private func ensureSession(_ id: HookIdentity, startedAt: Date) async throws {
+            guard !sessions.contains(id.sessionID) else { return }
+            if try await domain.session(id.sessionID) == nil {
+                try await domain.save(Session(id: id.sessionID, agentID: id.agent.id, hostID: id.host?.id,
+                                              workingDirectory: id.workingDirectory, externalRef: id.externalRef,
+                                              startedAt: startedAt))
+            }
+            sessions.insert(id.sessionID)
+        }
+
+        func close() async {
+            await events.close(); await domain.close()
+        }
+    }
+}

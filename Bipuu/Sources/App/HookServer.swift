@@ -64,6 +64,18 @@ final class HookServer: @unchecked Sendable {
     private var focusBeforeApproval: String? = nil    // saved focus to restore after approval
     private var sessions = PillSessionRegistry()      // live sessions behind each pill
 
+    /// Writes normalised events to the local database, off the hook path. Set once in `start()`,
+    /// before the socket thread exists; nil when recording is switched off (`recordEvents` default).
+    private var recorder: EventRecorder?
+    /// Who each queued permission request belongs to, so its resolution is recorded for the same session.
+    @MainActor private var approvalIdentities: [UUID: HookIdentity] = [:]
+
+    /// Event recording is on unless the `recordEvents` default is set to false (or `BIPUU_RECORD_EVENTS=0`).
+    static var recordingEnabled: Bool {
+        if ProcessInfo.processInfo.environment["BIPUU_RECORD_EVENTS"] == "0" { return false }
+        return UserDefaults.standard.object(forKey: "recordEvents") as? Bool ?? true
+    }
+
     private init() {}
 
     // MARK: - Approval queue helpers
@@ -120,6 +132,13 @@ final class HookServer: @unchecked Sendable {
         expandIfNeeded(to: .approval)
     }
 
+    /// The `permissionDecision` of a reply line, or nil when nothing was answered.
+    private static func permissionDecision(in json: String?) -> String? {
+        guard let json, let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object["permissionDecision"] as? String
+    }
+
     /// Takes one request out of the queue. With `answer`, the decision is written to its
     /// bipuu-hook first; without, the connection just closes and the agent asks again itself.
     /// The cancel handler of its source closes the fd — never close it directly.
@@ -128,6 +147,10 @@ final class HookServer: @unchecked Sendable {
     @MainActor
     private func removeApproval(id: UUID, answer json: String? = nil, note: String? = nil) {
         guard let entry = approvals.remove(id: id) else { return }
+        if let identity = approvalIdentities.removeValue(forKey: id) {
+            recorder?.submit(HookEventAdapter.approvalResolved(identity: identity, approvalID: id,
+                                                               decision: Self.permissionDecision(in: json)))
+        }
         let source = approvalSources.removeValue(forKey: id)
         if let json {
             let fd = entry.fd
@@ -295,6 +318,10 @@ final class HookServer: @unchecked Sendable {
             return
         }
         installHookScript()
+        if Self.recordingEnabled {
+            recorder = EventRecorder(databasePath: EventRecorder.defaultDatabasePath(supportDir: dir),
+                                     log: { appendAppLog("bipuu.log", $0) })
+        }
         Thread.detachNewThread { self.serverThread() }
     }
 
@@ -445,6 +472,7 @@ final class HookServer: @unchecked Sendable {
         if bipuuKind == "ask_user_question" {
             let toolInput = payload["tool_input"] as? [String: Any] ?? [:]
             if let parsed = AskQuestion.parse(toolInput: toolInput) {
+                recorder?.submit(HookEventAdapter.questionRequested(payload: payload))
                 Task { @MainActor in self.processQuestionRequest(fd: fd, parsed: parsed, payload: payload) }
             } else {
                 // Malformed payload — fall back: send ask so Claude Code re-asks in terminal
@@ -460,6 +488,8 @@ final class HookServer: @unchecked Sendable {
             // Hold fd open — Claude Code waits for our decision (up to 120s)
             Task { @MainActor in self.processPermissionRequest(fd: fd, payload: payload) }
         } else {
+            // Recording is a side channel: queued and written elsewhere, it cannot delay the reply.
+            if let hook = HookEventAdapter.hook(name: eventName, payload: payload) { recorder?.submit(hook) }
             Task { @MainActor in self.processEvent(name: eventName, payload: payload) }
             sendLine(fd: fd, text: #"{"ok":true}"#)
             close(fd)
@@ -905,6 +935,9 @@ final class HookServer: @unchecked Sendable {
             return
         }
         activeSessionId = sessionId
+        let requested = HookEventAdapter.approvalRequested(payload: payload, approvalID: entry.id)
+        approvalIdentities[entry.id] = requested.identity
+        recorder?.submit(requested)
 
         upsertTask(pill: pillId,
                    display: PillSessionRegistry.Display(session: sessionId, projectName: projectName,
