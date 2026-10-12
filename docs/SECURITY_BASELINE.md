@@ -53,7 +53,7 @@ Read-only source audit; nothing built or run. Severity is for Bipuu's threat mod
 **M6 — Hardening differs across platforms.** Windows/Linux relay and server are stricter than macOS (peer verification, CSP `script-src 'self'`, minimal Tauri capabilities, keystore allow-list, ack timeout). Bring macOS to the same level.
 
 ### Low
-- L1 Keychain: generic passwords, `WhenUnlockedThisDeviceOnly`, not synchronizable; legacy login keychain (accessibility attr largely ignored on macOS); no ACL object. Service `app.example.NotchBuddy`; keys: anthropic, google, openai, resend(+from), n8n(url+key), vercel, github, stripe, calcom, notion, elevenlabs. Nothing sensitive found in UserDefaults.
+- L1 Keychain: generic passwords, `WhenUnlockedThisDeviceOnly`, not synchronizable; legacy login keychain (accessibility attr largely ignored on macOS); no ACL object. Service `<author-domain>.NotchBuddy`; keys: anthropic, google, openai, resend(+from), n8n(url+key), vercel, github, stripe, calcom, notion, elevenlabs. Nothing sensitive found in UserDefaults.
 - L2 Logging: `AppLog` good (0700/0600, rotation, control chars escaped); no prompts/commands in `nb.log`. `instruction-last.log` contains claude output, no explicit mode.
 - L3 Config backups `*.bak-<ts>` accumulate (no retention).
 - L4 Statusline relay runs the user's previous command via `/bin/sh -c` from `statusline-previous.json` (0700 dir) — low.
@@ -68,7 +68,7 @@ No telemetry/analytics anywhere (CI guards forbid analytics/ads libs); no auto-u
 Not sandboxed; hardened runtime on; entitlements: audio-input, addressbook, apple-events (+ iCloud/push in Cloud variants). Usage strings: Accessibility, Apple Events, Contacts, Microphone, Speech. **All of these except possibly Apple Events (terminal jump) belong to non-core features and are removed in Bipuu v1** → minimal entitlements.
 
 ## Egress inventory (Coucou)
-api.github.com, api.vercel.com, api.stripe.com, api.notion.com, api.resend.com, api.cal.com, user n8n URL, api.anthropic.com, generativelanguage.googleapis.com, api.openai.com, api.elevenlabs.io, api.open-meteo.com, api.exchange.coinbase.com, www.okx.com, Spotify art CDN, `coucou-relay.relay.example.invalid`, CloudKit (if sync on), user local LLM. **Bipuu v1 egress target: none by default.**
+api.github.com, api.vercel.com, api.stripe.com, api.notion.com, api.resend.com, api.cal.com, user n8n URL, api.anthropic.com, generativelanguage.googleapis.com, api.openai.com, api.elevenlabs.io, api.open-meteo.com, api.exchange.coinbase.com, www.okx.com, Spotify art CDN, `coucou-relay.<the author's Cloudflare Worker host>`, CloudKit (if sync on), user local LLM. **Bipuu v1 egress target: none by default.**
 
 ## Supply chain
 Mac: no packages. Rust: `windows/Cargo.lock` (563 pkgs, licences not audited). npm: wrangler/vitest/vite/typescript with `^` ranges. CI: actions pinned by major tag, unpinned `brew install xcodegen`; Android signing secrets only in tag workflow.

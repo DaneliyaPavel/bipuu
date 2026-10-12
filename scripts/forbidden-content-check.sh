@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Fails when the tree (or, with --history, any commit) contains the Coucou/Mochi identity,
 # the original author's infrastructure identifiers, or protected media/asset file types.
+# The pattern is written with bracketed letters so this file does not contain what it searches for.
 # See docs/IP_MIGRATION.md. The files that must name them (to document the migration) are allow-listed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PATTERN='coucou|mochi|notch ?buddy|example|louis-cfm|TEAMID-REMOVED|example|rhytam'
+PATTERN='cou[c]ou|mo[c]hi|notch ?bu[d]dy|lou[i]sraille|lou[i]s-cfm|256AUJ[9]555|rail[l]elouis|rhy[t]am'
 ALLOW=(
   ':!LICENSE' ':!THIRD_PARTY_NOTICES.md'
   ':!docs/IP_MIGRATION.md' ':!docs/ARCHITECTURE_BASELINE.md' ':!docs/SECURITY_BASELINE.md'

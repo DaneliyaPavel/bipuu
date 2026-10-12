@@ -58,13 +58,13 @@ Since Bipuu is a *new product with no installed base*, almost everything is "ren
 
 | Identifier | Where | Action |
 |---|---|---|
-| `app.example.NotchBuddy` | `project.yml`, Info.plist, entitlements, Keychain service (`ClaudeService.swift:7`, 16 uses) | rename now |
-| `app.example.Coucou`, `.Widgets`, `.NotificationContent` | App Store + iPhone | delete (targets dropped) |
-| `iCloud.app.example.Coucou` (14 refs), `group.app.example.Coucou` | PhoneLink, entitlements | delete |
-| `app.example.Coucou.push-type.liveactivity`, `APNS_TEAM_ID TEAMID-REMOVED` | `relay/wrangler.toml` | delete |
-| `TEAMID-REMOVED` (author's Apple Team ID) | `project.yml` ×7, `.pbxproj` ×23, entitlements, scripts | **must not appear in Bipuu** |
-| `https://coucou-relay.relay.example.invalid` | `LiveActivityRelay.swift:28` (default!) | **delete — would route Bipuu data through a third party** |
-| `app.example.coucou` (Tauri id, keyring), `app.example.Coucou.Focus` | `tauri.conf.json`, `secrets.rs`, `portal.rs`, `linux_focus.rs` | rename |
+| `<author-domain>.NotchBuddy` | `project.yml`, Info.plist, entitlements, Keychain service (`ClaudeService.swift:7`, 16 uses) | rename now |
+| `<author-domain>.Coucou`, `.Widgets`, `.NotificationContent` | App Store + iPhone | delete (targets dropped) |
+| `iCloud.<author-domain>.Coucou` (14 refs), `group.<author-domain>.Coucou` | PhoneLink, entitlements | delete |
+| `<author-domain>.Coucou.push-type.liveactivity`, `APNS_TEAM_ID <the author's Apple Team ID>` | `relay/wrangler.toml` | delete |
+| `<the author's Apple Team ID>` (author's Apple Team ID) | `project.yml` ×7, `.pbxproj` ×23, entitlements, scripts | **must not appear in Bipuu** |
+| `https://coucou-relay.<the author's Cloudflare Worker host>` | `LiveActivityRelay.swift:28` (default!) | **delete — would route Bipuu data through a third party** |
+| `<author-domain>.coucou` (Tauri id, keyring), `<author-domain>.Coucou.Focus` | `tauri.conf.json`, `secrets.rs`, `portal.rs`, `linux_focus.rs` | rename |
 | `~/Library/Application Support/NotchBuddy/`, `~/Library/Logs/NotchBuddy/`, `nb.sock` | `HookServer.swift:17`, `SoundEngine`, `RecapStore` | rename |
 | `~/.claude/coucou/{nb-hook,nb-hook.py}` | `HookServer.swift:1571` | rename |
 | `nb-hook`, `coucou-hook` | 13 files | rename → `bipuu-hook` |
@@ -76,12 +76,12 @@ Since Bipuu is a *new product with no installed base*, almost everything is "ren
 | `com.coucou.android` (186 files) | Android | delete |
 | UserDefaults keys (~51; `mochiOutfit`, `outfitPresence`, `greetThreshold`, `coucouHooksInstalled`, `coucou.musicAutomationGranted`, …) | App | rename/delete |
 | Updater feed | **none exists** | design Bipuu's own |
-| URLs: `github.com/Louis-CFM/coucou`, `louis-cfm.github.io/coucou/*`, TestFlight `testflight.example.invalid` | README, `release.sh`, PKGBUILD, `AboutView.swift`, `WeeklyRecapView.swift:305`, `recap/share.ts:33` | delete / replace |
+| URLs: `github.com/Louis-CFM/coucou`, `louis-cfm.github.io/coucou/*`, TestFlight `<the author's TestFlight link>` | README, `release.sh`, PKGBUILD, `AboutView.swift`, `WeeklyRecapView.swift:305`, `recap/share.ts:33` | delete / replace |
 
 CLAUDE.md of Coucou forbids renaming bundle id/pill ids **for Coucou**; that constraint does not carry over to Bipuu, but Bipuu must define its *own* stable contract IDs from day one (see ROADMAP).
 
 ### Author personal data that must not leak into Bipuu
-`removed@example.invalid` (LICENSE-ASSETS, `docs/terms|support|legal.html`), `example.invalid`, `projectColors` hard-coding the author's projects (`IslandTypes.swift:221-230`, `windows/src/core/layout.ts:205-212`: "korus", "sbe hub", "morning ai brief", "publication ig", …), private n8n host in `docs/INTEGRATIONS.md:207`, `/Users/user/…` in a `HookServer.swift:22` comment, `© Louis Raille` in `tauri.conf.json:52`, ~50 contributor emails in git history, Team ID `TEAMID-REMOVED`.
+`(the author's e-mail, redacted)` (LICENSE-ASSETS, `docs/terms|support|legal.html`), (the author's website, redacted), `projectColors` hard-coding the author's projects (`IslandTypes.swift:221-230`, `windows/src/core/layout.ts:205-212`: "korus", "sbe hub", "morning ai brief", "publication ig", …), private n8n host in `docs/INTEGRATIONS.md:207`, `/Users/user/…` in a `HookServer.swift:22` comment, `© Louis Raille` in `tauri.conf.json:52`, ~50 contributor emails in git history, Team ID `<the author's Apple Team ID>`.
 
 ## 6. Third-party marks and data
 

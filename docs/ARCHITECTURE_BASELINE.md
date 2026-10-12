@@ -45,7 +45,7 @@ Method: read-only code reading by six parallel audits. **Nothing was built, run 
 
 ## 4. Mobile components
 
-iPhone: CloudKit private DB (`iCloud.app.example.Coucou`) + Cloudflare APNs relay; same-Apple-ID "pairing"; Face ID for Allow. Android/Windows: LAN TLS (cert-pinned) or user-deployed CF relay with E2E AES-256-GCM (HKDF, counter, padding; test vectors shared across Rust/Kotlin/TS). **Deferred for Bipuu v1.** Ideas worth keeping for a later phase: fingerprint-bound single-use approvals, capability negotiation with off-by-default features, keyless dumb-pipe relay. Details and red flags in SECURITY_BASELINE.
+iPhone: CloudKit private DB (`iCloud.<author-domain>.Coucou`) + Cloudflare APNs relay; same-Apple-ID "pairing"; Face ID for Allow. Android/Windows: LAN TLS (cert-pinned) or user-deployed CF relay with E2E AES-256-GCM (HKDF, counter, padding; test vectors shared across Rust/Kotlin/TS). **Deferred for Bipuu v1.** Ideas worth keeping for a later phase: fingerprint-bound single-use approvals, capability negotiation with off-by-default features, keyless dumb-pipe relay. Details and red flags in SECURITY_BASELINE.
 
 ## 5. Agent event / hook flow (macOS)
 
@@ -100,7 +100,7 @@ No adapter protocol: each agent is a copy-pasted `previewX/writeX/removeX` tripl
 
 ## 9. Storage & state
 
-- UserDefaults: ~51 un-prefixed keys (partial inventory). Keychain service `app.example.NotchBuddy`, `WhenUnlockedThisDeviceOnly`, legacy login keychain; 11 service keys.
+- UserDefaults: ~51 un-prefixed keys (partial inventory). Keychain service `<author-domain>.NotchBuddy`, `WhenUnlockedThisDeviceOnly`, legacy login keychain; 11 service keys.
 - Files under `~/Library/Application Support/NotchBuddy/` (`nb.sock`, `nb-hook`, `nb-hook.py`, `recap.json`, `statusline-previous.json`, `Sounds/`), logs `~/Library/Logs/NotchBuddy/nb.log` (1 MB rotation, 0600), config backups `*.bak-<ts>` next to agent configs (no retention).
 - **No persistence of tasks/sessions/events on Mac** — live state is in memory and lost on restart. No SwiftData/CoreData. `RecapStore` keeps aggregates (rewrites whole file on every event). This is the single biggest gap for a task-centric product.
 
