@@ -57,7 +57,7 @@ public struct GitWorkContextLocator: WorkContextLocator {
 
     /// `gitdir: <path>` (absolute or relative to the directory holding the file).
     private static func gitDir(fromFile file: URL, base: URL) -> URL? {
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        guard let text = readSmallFile(file) else { return nil }
         let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
         guard line.hasPrefix("gitdir:") else { return nil }
         let raw = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
@@ -68,11 +68,27 @@ public struct GitWorkContextLocator: WorkContextLocator {
 
     /// `ref: refs/heads/<branch>` gives the branch; a detached HEAD gives nil.
     private static func branch(inHead head: URL) -> String? {
-        guard let text = try? String(contentsOf: head, encoding: .utf8) else { return nil }
+        guard let text = readSmallFile(head) else { return nil }
         let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
         let prefix = "ref: refs/heads/"
         guard line.hasPrefix(prefix) else { return nil }
         let name = String(line.dropFirst(prefix.count))
         return name.isEmpty ? nil : name
+    }
+
+    /// The directories we read come from agents, so a repository can be hostile: `.git` or `HEAD` may be a
+    /// FIFO (opening it would block), a device, or gigabytes of data. Only a regular file of at most
+    /// `maxFileSize` bytes is read, and never more than that.
+    public static let maxFileSize = 4_096
+
+    static func readSmallFile(_ url: URL) -> String? {
+        let resolved = url.resolvingSymlinksInPath()
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: resolved.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber, size.intValue <= maxFileSize,
+              let handle = try? FileHandle(forReadingFrom: resolved) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: maxFileSize + 1), data.count <= maxFileSize else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }

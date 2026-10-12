@@ -36,6 +36,7 @@ await run("InferenceChecks.closedTasksAreNotReopened") { try await InferenceChec
 await run("InferenceChecks.skipsWhatCannotBePlaced") { try await InferenceChecks().skipsWhatCannotBePlaced() }
 await run("InferenceChecks.inferenceKeyPersistsAndOldDataStillDecodes") { try await InferenceChecks().inferenceKeyPersistsAndOldDataStillDecodes() }
 await run("InferenceChecks.gitLocatorFindsRepositoriesWorktreesAndPlainDirectories") { try await InferenceChecks().gitLocatorFindsRepositoriesWorktreesAndPlainDirectories() }
+await run("InferenceChecks.hostileRepositoriesCannotStallOrExhaustTheLocator") { try await InferenceChecks().hostileRepositoriesCannotStallOrExhaustTheLocator() }
 await run("InferenceChecks.inferenceWorksEndToEndWithTheRealLocator") { try await InferenceChecks().inferenceWorksEndToEndWithTheRealLocator() }
 
 finish()

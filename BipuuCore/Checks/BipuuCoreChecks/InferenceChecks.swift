@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import BipuuCore
 import BipuuChecking
 
@@ -215,6 +216,49 @@ struct InferenceChecks {
         // Missing paths and files are not directories.
         try await check(loc.context(forDirectory: base.path + "/nope") == nil && loc.context(forDirectory: "") == nil)
         write("afile", "x"); try await check(loc.context(forDirectory: base.path + "/afile") == nil)
+    }
+
+    func hostileRepositoriesCannotStallOrExhaustTheLocator() async throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("bipuu-hostile-\(UUID().uuidString)").resolvingSymlinksInPath()
+        defer { try? fm.removeItem(at: base) }
+        func dir(_ p: String) { try? fm.createDirectory(at: base.appendingPathComponent(p), withIntermediateDirectories: true) }
+        let loc = GitWorkContextLocator()
+
+        // HEAD is a FIFO: opening it for reading would block forever. It must be refused without opening.
+        dir("fifo-head/.git")
+        try await check(mkfifo(base.path + "/fifo-head/.git/HEAD", 0o600) == 0)
+        try await check(loc.context(forDirectory: base.path + "/fifo-head") == WorkContext(projectRoot: base.path + "/fifo-head", branch: nil), "FIFO HEAD")
+
+        // `.git` itself is a FIFO: ignored, the walk goes on upwards.
+        dir("fifo-git/inner")
+        try await check(mkfifo(base.path + "/fifo-git/.git", 0o600) == 0)
+        try await check(loc.context(forDirectory: base.path + "/fifo-git/inner")?.branch == nil, "FIFO .git")
+
+        // A huge HEAD (and a huge .git file) is not read: no branch, no root from it.
+        dir("big/.git")
+        try String(repeating: "ref: refs/heads/" + String(repeating: "x", count: 1_000) + "\n", count: 2_000)
+            .write(to: base.appendingPathComponent("big/.git/HEAD"), atomically: true, encoding: .utf8)
+        try await check(loc.context(forDirectory: base.path + "/big")?.branch == nil, "oversized HEAD")
+        dir("bigfile")
+        try ("gitdir: " + String(repeating: "a", count: 1_000_000)).write(to: base.appendingPathComponent("bigfile/.git"), atomically: true, encoding: .utf8)
+        try await check(loc.context(forDirectory: base.path + "/bigfile") == WorkContext(projectRoot: base.path + "/bigfile", branch: nil), "oversized .git file")
+
+        // A HEAD exactly at the limit still works; one byte over does not.
+        dir("edge/.git")
+        let line = "ref: refs/heads/"
+        let fits = line + String(repeating: "b", count: GitWorkContextLocator.maxFileSize - line.count)
+        try fits.write(to: base.appendingPathComponent("edge/.git/HEAD"), atomically: true, encoding: .utf8)
+        try await check(loc.context(forDirectory: base.path + "/edge")?.branch?.count == GitWorkContextLocator.maxFileSize - line.count, "at the limit")
+        try (fits + "b").write(to: base.appendingPathComponent("edge/.git/HEAD"), atomically: true, encoding: .utf8)
+        try await check(loc.context(forDirectory: base.path + "/edge")?.branch == nil, "one byte over the limit")
+
+        // A gitdir pointing at a directory whose HEAD is a FIFO: still no hang.
+        dir("gd/.git-target")
+        try await check(mkfifo(base.path + "/gd/.git-target/HEAD", 0o600) == 0)
+        dir("wt")
+        try "gitdir: \(base.path)/gd/.git-target\n".write(to: base.appendingPathComponent("wt/.git"), atomically: true, encoding: .utf8)
+        try await check(loc.context(forDirectory: base.path + "/wt")?.branch == nil, "gitdir with FIFO HEAD")
     }
 
     func inferenceWorksEndToEndWithTheRealLocator() async throws {
