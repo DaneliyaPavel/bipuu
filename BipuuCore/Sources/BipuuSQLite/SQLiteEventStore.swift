@@ -102,4 +102,35 @@ public actor SQLiteEventStore: EventStore {
         try expect("source", C.text(s, 11), event.source.adapter)
         return event
     }
+
+}
+
+extension SQLiteEventStore: EventRetention {
+    public func prune(_ policy: RetentionPolicy, now: Date) throws -> RetentionResult {
+        var result = RetentionResult()
+        try conn.transaction {
+            if let maxAge = policy.maxAge {
+                try conn.run("DELETE FROM events WHERE occurred_at_us < ?1", [.int(now.addingTimeInterval(-maxAge).epochMicroseconds)])
+                result.removedByAge = try conn.changes()
+            }
+            if let maxEvents = policy.maxEvents {
+                let total = try conn.query("SELECT count(*) FROM events") { Int(SQLiteConnection.int($0, 0)) }.first ?? 0
+                let surplus = total - max(0, maxEvents)
+                if surplus > 0 {
+                    // The oldest in canonical order, found through the (occurred, received, id) index.
+                    try conn.run("""
+                        DELETE FROM events WHERE event_id IN (
+                            SELECT event_id FROM events ORDER BY occurred_at_us, received_at_us, event_id LIMIT ?1)
+                        """, [.int(Int64(surplus))])
+                    result.removedByCount = try conn.changes()
+                }
+            }
+        }
+        if result.removed > 0 { conn.checkpointTruncate() }
+        return result
+    }
+
+    public func eventCount() throws -> Int {
+        try conn.query("SELECT count(*) FROM events") { Int(SQLiteConnection.int($0, 0)) }.first ?? 0
+    }
 }

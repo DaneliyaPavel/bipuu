@@ -21,6 +21,7 @@ await run("InMemoryEventStoreTests.recentIsLastNInAscendingOrder") { try await I
 await run("IsolationTests.coreImportsOnlyFoundation") { try await IsolationTests().coreImportsOnlyFoundation() }
 await run("IsolationTests.coreHasNoVendorBranching") { try await IsolationTests().coreHasNoVendorBranching() }
 await EventStoreContract.runAll("InMemoryEventStore") { InMemoryEventStore() }
+await RetentionContract.runAll("InMemoryEventStore") { InMemoryEventStore() }
 await DomainStoreContract.runAll("InMemoryDomainStore") { InMemoryDomainStore() }
 await run("ProjectionChecks.phases") { try await ProjectionChecks().phases() }
 await run("ProjectionChecks.attention") { try await ProjectionChecks().attention() }

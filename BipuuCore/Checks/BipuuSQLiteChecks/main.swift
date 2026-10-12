@@ -45,6 +45,24 @@ func ev(_ id: String, occ: Double = 1, rec: Double? = nil, session: String = "s"
 }
 nonisolated(unsafe) var tempPaths: [String] = []
 
+// MARK: crash child (re-executed by the kill -9 check below)
+
+/// Writes events and sessions in a loop and prints "ack <i>" only after both are committed. Never exits on its own.
+if CommandLine.arguments.count >= 4, CommandLine.arguments[1] == "--crash-child" {
+    let path = CommandLine.arguments[2]
+    var i = Int(CommandLine.arguments[3]) ?? 0
+    let events = try SQLiteEventStore(path: path), domain = try SQLiteDomainStore(path: path)
+    try await domain.save(Agent(id: AgentID("a"), kind: "k", displayName: "A"))
+    setvbuf(stdout, nil, _IOLBF, 0)
+    while true {
+        try await domain.save(Session(id: SessionID("s\(i)"), agentID: AgentID("a"), startedAt: Date(timeIntervalSince1970: Double(i))))
+        _ = try await events.append(ev("k\(i)", occ: Double(i), session: "s\(i)",
+                                       payload: .object(["filler": .string(String(repeating: "x", count: 600))])))
+        print("ack \(i)")
+        i += 1
+    }
+}
+
 // MARK: 1. the shared contract
 
 await EventStoreContract.runAll("SQLiteEventStore") {
@@ -55,6 +73,11 @@ await EventStoreContract.runAll("SQLiteEventStore") {
     return try SQLiteEventStore(path: path)
 }
 
+await RetentionContract.runAll("SQLiteEventStore") {
+    let path = tempDB()
+    tempPaths.append(path)
+    return try SQLiteEventStore(path: path)
+}
 await DomainStoreContract.runAll("SQLiteDomainStore") {
     let path = tempDB()
     tempPaths.append(path)
@@ -380,6 +403,65 @@ await run("sanity: the work overview over 40 tasks, 80 sessions and 8k events bu
     try await check(overview.taskCount == 40 && overview.groups.count == 1)
     try await check(seconds < 3, "overview took \(seconds)s")
     print("      (overview of 40 tasks over 8k events: \(String(format: "%.3f", seconds))s)")
+}
+
+// MARK: 4. crash safety, with a real kill -9
+
+/// Collects what a child prints, from a background handler.
+final class LineBox: @unchecked Sendable {
+    private let lock = NSLock(); private var data = Data()
+    func add(_ d: Data) { lock.lock(); data.append(d); lock.unlock() }
+    /// Highest acknowledged index so far (-1 if none), and every acknowledged index.
+    var acks: [Int] {
+        lock.lock(); defer { lock.unlock() }
+        return String(decoding: data, as: UTF8.self).split(separator: "\n").compactMap { line in
+            line.hasPrefix("ack ") ? Int(line.dropFirst(4)) : nil
+        }
+    }
+}
+
+await run("kill -9 in the middle of writing: every acknowledged write survives and nothing is corrupt") {
+    let path = tempDB(); defer { removeDB(path) }
+    let me = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path
+    var acked = Set<Int>()
+    var next = 0
+    for (round, target) in [20, 150, 600, 3].enumerated() {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: me)
+        child.arguments = ["--crash-child", path, String(next)]
+        let pipe = Pipe(), box = LineBox()
+        child.standardOutput = pipe; child.standardError = FileHandle.nullDevice
+        pipe.fileHandleForReading.readabilityHandler = { box.add($0.availableData) }
+        try child.run()
+        let deadline = Date().addingTimeInterval(60)
+        while (box.acks.last ?? -1) < next + target, Date() < deadline, child.isRunning { try await Task.sleep(for: .milliseconds(5)) }
+        kill(child.processIdentifier, SIGKILL)               // no goodbye: no close(), no checkpoint, no atexit
+        child.waitUntilExit()
+        pipe.fileHandleForReading.readabilityHandler = nil
+        box.add(pipe.fileHandleForReading.readDataToEndOfFile())     // acks the child printed just before it died
+        acked.formUnion(box.acks)
+        try await check(child.terminationReason == .uncaughtSignal && child.terminationStatus == SIGKILL, "round \(round): the child was killed, not exited")
+        try await check(box.acks.count >= target, "round \(round): the child made progress (\(box.acks.count) acks)")
+
+        // The database is consistent...
+        try await check(scalarText(path, "PRAGMA integrity_check") == "ok", "round \(round): integrity_check")
+        try await check(scalarText(path, "PRAGMA foreign_key_check") == nil, "round \(round): foreign_key_check")
+        // ...and opens, with every stored row decoding and agreeing with its columns.
+        let events = try SQLiteEventStore(path: path), domain = try SQLiteDomainStore(path: path)
+        let stored = try await events.recentEvents(limit: 1_000_000)
+        let storedIndexes = Set(stored.compactMap { Int($0.id.rawValue.dropFirst()) })
+        try await check(acked.isSubset(of: storedIndexes), "round \(round): lost acknowledged events: \(acked.subtracting(storedIndexes).sorted().prefix(5))")
+        // The write that was in flight when the process died is either fully there or not at all: at most one extra, never a gap.
+        let top = storedIndexes.max() ?? -1
+        try await check(storedIndexes == Set(0...top), "round \(round): no gaps in the log")
+        try await check(storedIndexes.count - acked.count <= 1, "round \(round): at most the one in-flight event is unacknowledged")
+        for i in acked.sorted() { if try await domain.session(SessionID("s\(i)")) == nil { try await check(false, "round \(round): session s\(i) lost"); break } }
+        // It keeps working: a normal append after the crash.
+        try await check(try await events.append(ev("after\(round)", occ: 1e6 + Double(round), session: "after")) == .appended)
+        await events.close(); await domain.close()
+        next = top + 1
+    }
+    print("      (4 crashes, \(acked.count) acknowledged writes, all present)")
 }
 
 for p in tempPaths { removeDB(p) }

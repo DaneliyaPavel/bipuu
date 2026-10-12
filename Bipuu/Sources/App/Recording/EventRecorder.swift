@@ -35,8 +35,12 @@ final class EventRecorder: Sendable {
     /// `databasePath` is opened lazily on the first item, so starting the app never waits for the disk.
     /// `onWrite` is called on the consumer's thread after each event is stored (used to refresh the work view).
     /// With an `inference` policy, a session seen for the first time is proposed a task (see `TaskInferrer`).
-    init(databasePath: String, inference: InferencePolicy? = nil, onWrite: (@Sendable () -> Void)? = nil,
-         log: @escaping @Sendable (String) -> Void = { _ in }) {
+    /// `inference` and `retention` are asked each time they matter (a new session, a prune), so a change
+    /// in Settings applies to the next event. `nil` switches the feature off. The history is pruned after the
+    /// first write and then every `pruneEvery` events.
+    init(databasePath: String, inference: @escaping @Sendable () -> InferencePolicy? = { nil },
+         retention: @escaping @Sendable () -> RetentionPolicy? = { nil }, pruneEvery: Int = 500,
+         onWrite: (@Sendable () -> Void)? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
         let (stream, continuation) = AsyncStream<Message>.makeStream(bufferingPolicy: .bufferingNewest(Self.queueLimit))
         self.continuation = continuation
         let counters = counters
@@ -49,7 +53,7 @@ final class EventRecorder: Sendable {
                 case .hook(let item):
                     guard !disabled else { continue }
                     do {
-                        if sink == nil { sink = try Sink(path: databasePath, inference: inference, log: log) }
+                        if sink == nil { sink = try Sink(path: databasePath, inference: inference, retention: retention, pruneEvery: pruneEvery, log: log) }
                         try await sink?.write(item)
                         counters.record()
                         onWrite?()
@@ -106,12 +110,13 @@ final class EventRecorder: Sendable {
 
     // MARK: Default location
 
-    /// The recorder the app runs with: the standard database; and, when `inferTasks`, task inference
-    /// that treats the file system root and the home directory as too broad to be a project.
-    static func standard(supportDir: URL, inferTasks: Bool, onWrite: (@Sendable () -> Void)? = nil,
+    /// The recorder the app runs with: the standard database, and the user's choices from Settings
+    /// (task inference, retention) read fresh whenever they matter.
+    static func standard(supportDir: URL, onWrite: (@Sendable () -> Void)? = nil,
                          log: @escaping @Sendable (String) -> Void) -> EventRecorder {
         EventRecorder(databasePath: defaultDatabasePath(supportDir: supportDir),
-                      inference: inferTasks ? InferencePolicy(excludedRoots: ["/", NSHomeDirectory()]) : nil,
+                      inference: { HistorySettings.inferencePolicy() },
+                      retention: { HistorySettings.retentionPolicy() },
                       onWrite: onWrite, log: log)
     }
 
@@ -140,12 +145,16 @@ final class EventRecorder: Sendable {
     private actor Sink {
         private let events: SQLiteEventStore
         private let domain: SQLiteDomainStore
-        private let inferrer: TaskInferrer?
+        private let inference: @Sendable () -> InferencePolicy?
+        private let retention: @Sendable () -> RetentionPolicy?
+        private let pruneEvery: Int
+        private var written = 0
         private let log: @Sendable (String) -> Void
         private var agents = Set<AgentID>(), hosts = Set<HostID>(), sessions = Set<SessionID>()
 
-        init(path: String, inference: InferencePolicy?, log: @escaping @Sendable (String) -> Void) throws {
-            self.log = log
+        init(path: String, inference: @escaping @Sendable () -> InferencePolicy?, retention: @escaping @Sendable () -> RetentionPolicy?,
+             pruneEvery: Int, log: @escaping @Sendable (String) -> Void) throws {
+            self.log = log; self.inference = inference; self.retention = retention; self.pruneEvery = max(1, pruneEvery)
             // Create the file ourselves, owner-only, before SQLite does: its WAL files inherit the mode.
             if !FileManager.default.fileExists(atPath: path) {
                 let dir = (path as NSString).deletingLastPathComponent
@@ -157,7 +166,6 @@ final class EventRecorder: Sendable {
             let domain = try SQLiteDomainStore(path: path)
             self.events = events
             self.domain = domain
-            inferrer = inference.map { TaskInferrer(domain: domain, events: events, locator: GitWorkContextLocator(), policy: $0) }
         }
 
         func write(_ item: RecordedHook) async throws {
@@ -177,6 +185,19 @@ final class EventRecorder: Sendable {
                 event.projectID = try await domain.task(taskID)?.projectID
             }
             _ = try await events.append(event)
+            written += 1
+            if written == 1 || written % pruneEvery == 0 { await prune() }
+        }
+
+        /// Applies the retention policy as it is now. A failure is logged and never stops recording.
+        private func prune() async {
+            guard let policy = retention() else { return }
+            do {
+                let result = try await events.prune(policy, now: Date())
+                if result.removed > 0 { log("History pruned: \(result.removed) event(s) removed") }
+            } catch {
+                log("History pruning failed (\(String(describing: type(of: error))))")
+            }
         }
 
         /// Creates the session on first sight; never overwrites one that exists (it may have a task by now).
@@ -188,7 +209,8 @@ final class EventRecorder: Sendable {
                                               startedAt: startedAt))
                 // Only a brand-new session is proposed a task: one that already exists (assigned, or
                 // detached by the user) is never revisited, so inference cannot undo a user's choice.
-                if let inferrer {
+                if let policy = inference() {
+                    let inferrer = TaskInferrer(domain: domain, events: events, locator: GitWorkContextLocator(), policy: policy)
                     do { _ = try await inferrer.place(session: id.sessionID, at: now) }
                     catch { log("Task inference failed for a new session (\(String(describing: type(of: error))))") }
                 }

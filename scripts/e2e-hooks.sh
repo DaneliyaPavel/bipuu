@@ -26,6 +26,9 @@ ok()  { echo "  ✔ $1"; pass=$((pass+1)); }
 bad() { echo "  ✘ $1"; fail=$((fail+1)); }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
+# Waits up to $2 seconds (default 10) for a shell condition: timing-sensitive checks poll instead of sleeping.
+wait_for() { local i; for ((i = 0; i < ${2:-10} * 5; i++)); do eval "$1" && return 0; sleep 0.2; done; return 1; }
+
 stop_app() { pkill -f 'Bipuu.app/Contents/MacOS/Bipuu' 2>/dev/null; sleep 1; }
 trap stop_app EXIT
 
@@ -33,7 +36,8 @@ trap stop_app EXIT
 [ -x "$APP" ] || { echo "no app at $APP"; exit 2; }
 stop_app; rm -f "$LOG" "$SUP/bipuu.sock" "$DB" "$DB-wal" "$DB-shm"      # a killed run leaves its socket file behind
 (BIPUU_EVENT_DB="$DB" BIPUU_HOOK_TRACE=1 "$APP" >"$OUT/app.out" 2>&1 &)
-for i in 1 2 3 4 5 6 7 8; do [ -S "$SUP/bipuu.sock" ] && break; sleep 1; done
+wait_for '[ -S "$SUP/bipuu.sock" ]' 40 || echo "  (the app did not open its socket within 40 s)"   # a freshly built binary can start slowly
+sleep 1
 
 H="$SUP/bipuu-hook"
 echo "1. Files and permissions"
@@ -90,7 +94,7 @@ assert raw(b"\x00\xff\n\n") == b"", "garbage got a reply"
 EOF
 check "forged messages get no reply"            '[ $? -eq 0 ]'
 check "forged request never reached the app"    '! grep -q "forged-session" "$LOG"'
-check "the drop was logged without content"     'grep -q "did not carry a valid channel signature" "$LOG"'
+check "the drop was logged without content"     'wait_for "grep -q \"did not carry a valid channel signature\" \"$LOG\""'
 
 echo "4. Approval is held, and fails open when the app dies"
 PERM='{"hook_event_name":"PermissionRequest","session_id":"e2e-perm","cwd":"/tmp/demo","tool_name":"Bash","tool_input":{"command":"echo BIPUU-E2E-TEST-DO-NOT-CLICK"}}'
@@ -122,9 +126,20 @@ rm -f "$SUP/bipuu.sock"
 for i in 1 2 3 4 5 6; do [ -S "$SUP/bipuu.sock" ] && break; sleep 1; done
 sleep 1
 (BIPUU_EVENT_DB="$DB" BIPUU_HOOK_TRACE=1 "$APP" >"$OUT/app2.out" 2>&1 &)
-sleep 4
-check "exactly one instance keeps running" '[ "$(pgrep -f "Bipuu.app/Contents/MacOS/Bipuu" | wc -l | tr -d " ")" = 1 ]'
-check "the second one said why"            'grep -q "Another Bipuu is already serving" "$LOG"'
+check "exactly one instance keeps running" 'wait_for "[ \"\$(pgrep -f \"Bipuu.app/Contents/MacOS/Bipuu\" | wc -l | tr -d \" \")\" = 1 ]" 12 && sleep 1 && [ "$(pgrep -f "Bipuu.app/Contents/MacOS/Bipuu" | wc -l | tr -d " ")" = 1 ]'
+check "the second one said why"            'wait_for "grep -q \"Another Bipuu is already serving\" \"$LOG\""'
+
+echo "5b. Recording can be switched off"
+stop_app; rm -f "$SUP/bipuu.sock"
+DB_OFF="$OUT/events-off.sqlite"; rm -f "$DB_OFF" "$DB_OFF-wal" "$DB_OFF-shm"
+(BIPUU_RECORD_EVENTS=0 BIPUU_EVENT_DB="$DB_OFF" BIPUU_HOOK_TRACE=1 "$APP" >"$OUT/app-off.out" 2>&1 &)
+for i in 1 2 3 4 5 6 7 8; do [ -S "$SUP/bipuu.sock" ] && break; sleep 1; done
+for ev in SessionStart UserPromptSubmit PreToolUse PostToolUse Stop; do
+  send "{\"hook_event_name\":\"$ev\",\"session_id\":\"off-switch\",\"cwd\":\"$DEMO\",\"tool_name\":\"Bash\"}"
+done
+sleep 2
+check "the app still handled the events"      "grep -q 'trace event=PostToolUse .*session=off-swit' '$LOG'"
+check "but nothing was recorded (no database)" '[ ! -e "$DB_OFF" ]'
 
 if [ $WITH_CLAUDE -eq 1 ]; then
   echo "6. Real Claude Code (one short Haiku run, extra --settings file, your config untouched)"

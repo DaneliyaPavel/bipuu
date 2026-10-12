@@ -31,7 +31,7 @@ public protocol EventStore: Sendable {
 
 /// Reference implementation. Also the executable specification for other stores.
 public actor InMemoryEventStore: EventStore {
-    private var byID: [EventID: AgentEvent] = [:]
+    var byID: [EventID: AgentEvent] = [:]
 
     public init() {}
 

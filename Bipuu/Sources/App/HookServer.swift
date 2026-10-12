@@ -70,17 +70,9 @@ final class HookServer: @unchecked Sendable {
     /// Who each queued permission request belongs to, so its resolution is recorded for the same session.
     @MainActor private var approvalIdentities: [UUID: HookIdentity] = [:]
 
-    /// Proposing tasks for new sessions is on unless the `inferTasks` default is false (or `BIPUU_INFER_TASKS=0`).
-    static var inferenceEnabled: Bool {
-        if ProcessInfo.processInfo.environment["BIPUU_INFER_TASKS"] == "0" { return false }
-        return UserDefaults.standard.object(forKey: "inferTasks") as? Bool ?? true
-    }
-
-    /// Event recording is on unless the `recordEvents` default is set to false (or `BIPUU_RECORD_EVENTS=0`).
-    static var recordingEnabled: Bool {
-        if ProcessInfo.processInfo.environment["BIPUU_RECORD_EVENTS"] == "0" { return false }
-        return UserDefaults.standard.object(forKey: "recordEvents") as? Bool ?? true
-    }
+    /// The recorder when recording is on right now (a switch in Settings applies to the next event), else nil.
+    /// Arguments of a call on nil are not evaluated, so nothing is built while recording is off.
+    private var recording: EventRecorder? { HistorySettings.recordingEnabled() ? recorder : nil }
 
     private init() {}
 
@@ -317,18 +309,18 @@ final class HookServer: @unchecked Sendable {
         case .free: break
         case .liveServer:
             bipuuLog("Another Bipuu is already serving \(Self.socketPath); this instance quits")
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+            // Quit only after that line is on disk: it is the only explanation the user gets.
+            afterAppLogFlushed { DispatchQueue.main.async { NSApp.terminate(nil) } }
             return
         case .foreign:
             bipuuLog("\(Self.socketPath) exists and is not a socket owned by this user; refusing to remove it")
             return
         }
         installHookScript()
-        if Self.recordingEnabled {
-            recorder = EventRecorder.standard(supportDir: dir, inferTasks: Self.inferenceEnabled,
-                                              onWrite: { NotificationCenter.default.post(name: .workDataChanged, object: nil) },
-                                              log: { appendAppLog("bipuu.log", $0) })
-        }
+        // Always created (it opens nothing until the first event); whether it is fed is decided per event.
+        recorder = EventRecorder.standard(supportDir: dir,
+                                          onWrite: { NotificationCenter.default.post(name: .workDataChanged, object: nil) },
+                                          log: { appendAppLog("bipuu.log", $0) })
         Thread.detachNewThread { self.serverThread() }
     }
 
@@ -479,7 +471,7 @@ final class HookServer: @unchecked Sendable {
         if bipuuKind == "ask_user_question" {
             let toolInput = payload["tool_input"] as? [String: Any] ?? [:]
             if let parsed = AskQuestion.parse(toolInput: toolInput) {
-                recorder?.submit(HookEventAdapter.questionRequested(payload: payload))
+                recording?.submit(HookEventAdapter.questionRequested(payload: payload))
                 Task { @MainActor in self.processQuestionRequest(fd: fd, parsed: parsed, payload: payload) }
             } else {
                 // Malformed payload — fall back: send ask so Claude Code re-asks in terminal
@@ -496,7 +488,7 @@ final class HookServer: @unchecked Sendable {
             Task { @MainActor in self.processPermissionRequest(fd: fd, payload: payload) }
         } else {
             // Recording is a side channel: queued and written elsewhere, it cannot delay the reply.
-            if let hook = HookEventAdapter.hook(name: eventName, payload: payload) { recorder?.submit(hook) }
+            if let rec = recording, let hook = HookEventAdapter.hook(name: eventName, payload: payload) { rec.submit(hook) }
             Task { @MainActor in self.processEvent(name: eventName, payload: payload) }
             sendLine(fd: fd, text: #"{"ok":true}"#)
             close(fd)
@@ -942,9 +934,12 @@ final class HookServer: @unchecked Sendable {
             return
         }
         activeSessionId = sessionId
-        let requested = HookEventAdapter.approvalRequested(payload: payload, approvalID: entry.id)
-        approvalIdentities[entry.id] = requested.identity
-        recorder?.submit(requested)
+        // Only a request that was recorded gets its resolution recorded, so a pending approval never lingers.
+        if let rec = recording {
+            let requested = HookEventAdapter.approvalRequested(payload: payload, approvalID: entry.id)
+            approvalIdentities[entry.id] = requested.identity
+            rec.submit(requested)
+        }
 
         upsertTask(pill: pillId,
                    display: PillSessionRegistry.Display(session: sessionId, projectName: projectName,

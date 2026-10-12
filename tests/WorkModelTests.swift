@@ -45,7 +45,7 @@ struct WorkModelTests {
         model.viewDidDisappear()
 
         // 2. A real recorder fills the database; the model sees a proposed task.
-        let recorder = EventRecorder(databasePath: dbPath, inference: InferencePolicy(excludedRoots: ["/", base.path]),
+        let recorder = EventRecorder(databasePath: dbPath, inference: { InferencePolicy(excludedRoots: ["/", base.path]) },
                                      onWrite: { NotificationCenter.default.post(name: .workDataChanged, object: nil) })
         recorder.submit(hook("SessionStart", 1_000, session: "A", cwd: repo))
         recorder.submit(hook("UserPromptSubmit", 1_001, session: "A", cwd: repo))

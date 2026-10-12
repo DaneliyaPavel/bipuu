@@ -23,7 +23,7 @@ channel that requires user presence outside the user's session (future work), no
 
 **Local event history.** Bipuu records normalised hook events and sessions in `bipuu.sqlite` (0600, in the 0700 support dir). Only names
 and categories are stored: never prompts, commands, paths, file contents, tool input/output or messages ([EVENT_RECORDING.md](EVENT_RECORDING.md)).
-To propose tasks, Bipuu reads `.git` and `HEAD` in the working directories agents report (plain reads, nothing executed or written; [TASK_INFERENCE.md](TASK_INFERENCE.md)); project roots and branch names end up in the local database. It is not encrypted at rest beyond the user's disk encryption, has no retention limit yet, and can be disabled (`recordEvents`).
+To propose tasks, Bipuu reads `.git` and `HEAD` in the working directories agents report (plain reads, nothing executed or written; [TASK_INFERENCE.md](TASK_INFERENCE.md)); project roots and branch names end up in the local database. It is not encrypted at rest beyond the user's disk encryption. History is pruned automatically (default 90 days, at most 200 000 events), and recording and task suggestions can be switched off in Settings → History.
 
 **Diagnostics.** `BIPUU_HOOK_TRACE=1` logs one line per hook event (event, agent, shortened session id, tool name) and per approval decision (decision, queue length, card age, AppKit event type) — never prompts, commands, paths or contents.
 

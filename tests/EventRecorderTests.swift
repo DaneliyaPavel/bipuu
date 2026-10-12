@@ -202,7 +202,7 @@ struct EventRecorderTests {
             try FileManager.default.createDirectory(at: base.appendingPathComponent("proj/src"), withIntermediateDirectories: true)
             let dir = base.path + "/proj", sub = base.path + "/proj/src"
 
-            let rec = EventRecorder(databasePath: path, inference: InferencePolicy(excludedRoots: ["/", base.path]))
+            let rec = EventRecorder(databasePath: path, inference: { InferencePolicy(excludedRoots: ["/", base.path]) })
             rec.submit(hook("SessionStart", 100, session: "A", cwd: dir))
             rec.submit(hook("PreToolUse", 101, session: "A", cwd: dir))
             rec.submit(hook("SessionStart", 102, session: "B", cwd: sub))            // another session, same repository
@@ -233,11 +233,71 @@ struct EventRecorderTests {
             await rec.stop()
 
             // After a restart (empty caches) an existing session is not proposed a task again.
-            let again = EventRecorder(databasePath: path, inference: InferencePolicy(excludedRoots: ["/", base.path]))
+            let again = EventRecorder(databasePath: path, inference: { InferencePolicy(excludedRoots: ["/", base.path]) })
             again.submit(hook("PostToolUse", 120, session: "A", cwd: dir)); await again.stop()
             check(try await domain.session(SessionID("claude:A"))?.taskID == nil, "a restart does not undo the user's detach")
             check(try await domain.unattachedSessions().map(\.id.rawValue).sorted() == ["claude:A", "claude:C"], "unattached: A (detached), C")
             await events.close(); await domain.close()
+        }
+
+        // 7c. Retention: the recorder keeps the history within the policy, and reads the policy fresh each time.
+        do {
+            let path = tempPath(); defer { cleanup(path) }
+            let policy = PolicyBox(RetentionPolicy(maxAge: 90 * 86_400, maxEvents: 1_000))
+            let logs = LogBox()
+            let rec = EventRecorder(databasePath: path, retention: { policy.value }, pruneEvery: 3, log: { logs.add($0) })
+            let nowSeconds = Date().timeIntervalSince1970
+            for i in 0..<5 { rec.submit(hook("PostToolUse", 1_000 + Double(i), session: "ancient")) }        // 1970: far older than 90 days
+            rec.submit(hook("PostToolUse", nowSeconds - 60, session: "fresh"))
+            await rec.flush()
+            let events = try SQLiteEventStore(path: path)
+            let kept = try await events.recentEvents(limit: 100)
+            check(kept.count == 1 && kept[0].sessionID == SessionID("claude:fresh"), "age: only the fresh event is left (\(kept.count))")
+            check(logs.lines.contains { $0.contains("History pruned") && $0.contains("removed") }, "pruning is logged: \(logs.lines)")
+            check(!logs.lines.joined().contains("ancient") && !logs.lines.joined().contains("/work/app"), "the log says counts, not content")
+
+            // Count cap, changed while running: unlimited first, then a cap of 20 that the next prune applies.
+            policy.value = RetentionPolicy(maxAge: nil, maxEvents: nil)
+            for i in 0..<60 { rec.submit(hook("PostToolUse", nowSeconds + Double(i), session: "bulk")) }
+            await rec.flush()
+            check(try await events.eventCount() == 61, "no limits: nothing removed (\(try await events.eventCount()))")
+            policy.value = RetentionPolicy(maxAge: nil, maxEvents: 20)
+            for i in 60..<66 { rec.submit(hook("PostToolUse", nowSeconds + Double(i), session: "bulk")) }
+            await rec.flush()
+            let count = try await events.eventCount()
+            check(count <= 20 + 2 && count >= 20, "cap applied on the next prune (\(count))")
+            let newest = try await events.recentEvents(limit: 1)
+            check(newest.first?.occurredAt == Date(timeIntervalSince1970: nowSeconds + 65), "the newest event survives")
+
+            // Switching retention off keeps everything from then on.
+            policy.value = nil
+            for i in 66..<80 { rec.submit(hook("PostToolUse", nowSeconds + Double(i), session: "bulk")) }
+            await rec.flush()
+            check(try await events.eventCount() >= count + 14, "no policy, no pruning")
+            await rec.stop(); await events.close()
+        }
+
+        // 7d. Task inference follows its switch, per new session.
+        do {
+            let path = tempPath(); defer { cleanup(path) }
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("bipuu-repo-\(UUID().uuidString)").resolvingSymlinksInPath()
+            defer { try? FileManager.default.removeItem(at: base) }
+            try FileManager.default.createDirectory(at: base.appendingPathComponent("p/.git"), withIntermediateDirectories: true)
+            try "ref: refs/heads/main\n".write(to: base.appendingPathComponent("p/.git/HEAD"), atomically: true, encoding: .utf8)
+            let on = FlagBox(false)
+            let rec = EventRecorder(databasePath: path, inference: { on.value ? InferencePolicy(excludedRoots: ["/", base.path]) : nil })
+            rec.submit(hook("SessionStart", 1, session: "off", cwd: base.path + "/p")); await rec.flush()
+            on.value = true
+            rec.submit(hook("SessionStart", 2, session: "on", cwd: base.path + "/p")); await rec.flush()
+            on.value = false
+            rec.submit(hook("PostToolUse", 3, session: "off", cwd: base.path + "/p"))
+            rec.submit(hook("SessionStart", 4, session: "off2", cwd: base.path + "/p")); await rec.stop()
+            let domain = try SQLiteDomainStore(path: path)
+            check(try await domain.session(SessionID("claude:off"))?.taskID == nil, "off: unattached")
+            check(try await domain.session(SessionID("claude:on"))?.taskID != nil, "switched on: the next new session gets a task")
+            check(try await domain.session(SessionID("claude:off2"))?.taskID == nil, "switched off again: unattached")
+            check(try await domain.session(SessionID("claude:off"))?.taskID == nil, "an existing session is never revisited when the switch changes")
+            await domain.close()
         }
 
         // 8. The default location honours the override and otherwise lives in the support directory.
@@ -251,4 +311,15 @@ final class LogBox: @unchecked Sendable {
     private let lock = NSLock(); private var _lines: [String] = []
     func add(_ s: String) { lock.lock(); _lines.append(s); lock.unlock() }
     var lines: [String] { lock.lock(); defer { lock.unlock() }; return _lines }
+}
+
+final class PolicyBox: @unchecked Sendable {
+    private let lock = NSLock(); private var v: RetentionPolicy?
+    init(_ v: RetentionPolicy?) { self.v = v }
+    var value: RetentionPolicy? { get { lock.lock(); defer { lock.unlock() }; return v } set { lock.lock(); v = newValue; lock.unlock() } }
+}
+final class FlagBox: @unchecked Sendable {
+    private let lock = NSLock(); private var v: Bool
+    init(_ v: Bool) { self.v = v }
+    var value: Bool { get { lock.lock(); defer { lock.unlock() }; return v } set { lock.lock(); v = newValue; lock.unlock() } }
 }
