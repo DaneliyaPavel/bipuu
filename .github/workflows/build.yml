@@ -43,6 +43,9 @@ jobs:
             bash "$s"
           done
 
+      - name: BipuuCore checks
+        run: cd BipuuCore && swift run BipuuCoreChecks
+
       - name: Build (unsigned)
         run: |
           xcodebuild -project Bipuu/Bipuu.xcodeproj -scheme Bipuu -configuration Release \
