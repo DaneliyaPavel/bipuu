@@ -409,17 +409,22 @@ await run("sanity: the work overview over 40 tasks, 80 sessions and 8k events bu
 
 // MARK: 4. crash safety, with a real kill -9
 
-/// Collects what a child prints, from a background handler.
-final class LineBox: @unchecked Sendable {
-    private let lock = NSLock(); private var data = Data()
-    func add(_ d: Data) { lock.lock(); data.append(d); lock.unlock() }
-    /// Highest acknowledged index so far (-1 if none), and every acknowledged index.
+/// The acknowledgements a child wrote to its stdout, which is a plain file: whatever the child managed to write before
+/// it was killed is there to read afterwards, with no pipe, thread or end-of-file to race with.
+struct AckFile {
+    let url: URL
+    init() { url = FileManager.default.temporaryDirectory.appendingPathComponent("bipuu-acks-\(UUID().uuidString).txt") }
+    func create() -> FileHandle? {
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        return try? FileHandle(forWritingTo: url)
+    }
     var acks: [Int] {
-        lock.lock(); defer { lock.unlock() }
-        return String(decoding: data, as: UTF8.self).split(separator: "\n").compactMap { line in
-            line.hasPrefix("ack ") ? Int(line.dropFirst(4)) : nil
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        return String(decoding: data, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
+            line.hasPrefix("ack ") ? Int(line.dropFirst(4)) : nil      // a last line cut by the kill has no newline and is ignored
         }
     }
+    func remove() { try? FileManager.default.removeItem(at: url) }
 }
 
 await run("kill -9 in the middle of writing: every acknowledged write survives and nothing is corrupt") {
@@ -431,19 +436,15 @@ await run("kill -9 in the middle of writing: every acknowledged write survives a
         let child = Process()
         child.executableURL = URL(fileURLWithPath: me)
         child.arguments = ["--crash-child", path, String(next)]
-        let pipe = Pipe(), box = LineBox()
-        child.standardOutput = pipe; child.standardError = FileHandle.nullDevice
+        let box = AckFile(); defer { box.remove() }
+        guard let out = box.create() else { try await check(false, "could not create the ack file"); return }
+        child.standardOutput = out; child.standardError = FileHandle.nullDevice
         try child.run()
-        try? pipe.fileHandleForWriting.close()               // our copy: without this the reader never sees end-of-file
-        // A thread that reads until end-of-file: when it is done, every ack the child managed to print is counted.
-        let reading = DispatchGroup(); reading.enter()
-        let reader = pipe.fileHandleForReading
-        Thread { while true { let d = reader.availableData; if d.isEmpty { break }; box.add(d) }; reading.leave() }.start()
+        try? out.close()                                       // the child has its own copy
         let deadline = Date().addingTimeInterval(60)
         while (box.acks.last ?? -1) < next + target, Date() < deadline, child.isRunning { try await Task.sleep(for: .milliseconds(5)) }
         kill(child.processIdentifier, SIGKILL)               // no goodbye: no close(), no checkpoint, no atexit
         child.waitUntilExit()
-        await withCheckedContinuation { c in reading.notify(queue: .global()) { c.resume() } }   // end-of-file: nothing the child printed is left unread
         acked.formUnion(box.acks)
         try await check(child.terminationReason == .uncaughtSignal && child.terminationStatus == SIGKILL, "round \(round): the child was killed, not exited")
         try await check(box.acks.count >= target, "round \(round): the child made progress (\(box.acks.count) acks)")
