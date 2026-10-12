@@ -19,6 +19,8 @@ for a in "$@"; do case "$a" in --with-claude) WITH_CLAUDE=1;; --no-build) BUILD=
 SUP="$HOME/Library/Application Support/Bipuu"
 LOG="$HOME/Library/Logs/Bipuu/bipuu.log"
 APP="$OUT/Bipuu.app/Contents/MacOS/Bipuu"
+DB="$OUT/events.sqlite"                         # the app records here, never into real data (BIPUU_EVENT_DB)
+q() { sqlite3 -readonly "$DB" "$1" 2>/dev/null; }
 pass=0; fail=0
 ok()  { echo "  ✔ $1"; pass=$((pass+1)); }
 bad() { echo "  ✘ $1"; fail=$((fail+1)); }
@@ -29,8 +31,8 @@ trap stop_app EXIT
 
 [ $BUILD -eq 1 ] && scripts/dev-app-bundle.sh "$OUT" >/dev/null
 [ -x "$APP" ] || { echo "no app at $APP"; exit 2; }
-stop_app; rm -f "$LOG" "$SUP/bipuu.sock"      # a killed run leaves its socket file behind
-(BIPUU_HOOK_TRACE=1 "$APP" >"$OUT/app.out" 2>&1 &)
+stop_app; rm -f "$LOG" "$SUP/bipuu.sock" "$DB" "$DB-wal" "$DB-shm"      # a killed run leaves its socket file behind
+(BIPUU_EVENT_DB="$DB" BIPUU_HOOK_TRACE=1 "$APP" >"$OUT/app.out" 2>&1 &)
 for i in 1 2 3 4 5 6 7 8; do [ -S "$SUP/bipuu.sock" ] && break; sleep 1; done
 
 H="$SUP/bipuu-hook"
@@ -54,6 +56,14 @@ t0=$(python3 -c 'import time;print(time.time())')
 for i in 1 2 3 4 5; do send '{"hook_event_name":"PostToolUse","session_id":"lat","cwd":"/tmp"}'; done
 t1=$(python3 -c 'import time;print(time.time())')
 echo "  · relay latency (5 events): $(python3 -c "print('%.0f ms each' % (($t1-$t0)/5*1000))")"
+
+echo "2b. Events are recorded"
+check "database exists and is 0600"        '[ "$(stat -f %Lp "$DB" 2>/dev/null)" = 600 ]'
+check "schema version is 2"                '[ "$(q "PRAGMA user_version")" = 2 ]'
+check "the flow was recorded in order"     '[ "$(q "SELECT group_concat(event_kind, \",\") FROM (SELECT event_kind FROM events WHERE session_id = \"claude:e2e-flow\" ORDER BY occurred_at_us, received_at_us, event_id)")" = "session.started,prompt.submitted,tool.started,tool.finished,turn.finished" ]'
+check "the session exists, unattached"     '[ "$(q "SELECT count(*) FROM sessions WHERE session_id = \"claude:e2e-flow\" AND task_id IS NULL")" = 1 ]'
+check "no prompt or command text was stored" '[ "$(q "SELECT count(*) FROM events WHERE raw_json LIKE \"%pytest%\" OR raw_json LIKE \"%hello%\"")" = 0 ]'
+check "tool name and category were stored" '[ "$(q "SELECT count(*) FROM events WHERE event_kind = \"tool.started\" AND json_extract(CAST(raw_json AS TEXT), \"$.payload.category\") = \"execute\" AND json_extract(CAST(raw_json AS TEXT), \"$.payload.tool\") = \"Bash\"")" -ge 1 ]'
 
 echo "3. Forged messages are not acted on"
 python3 - "$SUP/bipuu.sock" <<'EOF' || bad "forgery probe failed"
@@ -82,6 +92,7 @@ RP=$!
 sleep 1.5
 check "relay waits on the app while the card is up" 'kill -0 $RP 2>/dev/null'
 check "app traced the PermissionRequest"            'grep -q "trace event=PermissionRequest .*session=e2e-per" "$LOG"'
+check "the request was recorded, without its command" '[ "$(q "SELECT count(*) FROM events WHERE event_kind = \"approval.requested\" AND session_id = \"claude:e2e-perm\"")" = 1 ] && [ "$(q "SELECT count(*) FROM events WHERE raw_json LIKE \"%BIPUU-E2E-TEST%\"")" = 0 ]'
 sleep 1.5
 if grep -q "trace approval decision=" "$LOG"; then
   echo "  – skipped the fail-open-on-death check: someone clicked the card ($(grep -o 'decision=[a-z]* .*' "$LOG" | tail -1))"
@@ -99,10 +110,10 @@ fi
 
 echo "5. A second instance does not take over"
 rm -f "$SUP/bipuu.sock"
-(BIPUU_HOOK_TRACE=1 "$APP" >"$OUT/app.out" 2>&1 &)
+(BIPUU_EVENT_DB="$DB" BIPUU_HOOK_TRACE=1 "$APP" >"$OUT/app.out" 2>&1 &)
 for i in 1 2 3 4 5 6; do [ -S "$SUP/bipuu.sock" ] && break; sleep 1; done
 sleep 1
-(BIPUU_HOOK_TRACE=1 "$APP" >"$OUT/app2.out" 2>&1 &)
+(BIPUU_EVENT_DB="$DB" BIPUU_HOOK_TRACE=1 "$APP" >"$OUT/app2.out" 2>&1 &)
 sleep 4
 check "exactly one instance keeps running" '[ "$(pgrep -f "Bipuu.app/Contents/MacOS/Bipuu" | wc -l | tr -d " ")" = 1 ]'
 check "the second one said why"            'grep -q "Another Bipuu is already serving" "$LOG"'

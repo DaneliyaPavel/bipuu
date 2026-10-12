@@ -21,6 +21,10 @@ path, forged approval cards, replayed or altered replies, loosened permissions. 
 as the same user — that code can read the key and could equally rewrite the agent's own settings. A stronger boundary needs a
 channel that requires user presence outside the user's session (future work), not more crypto on this one.
 
+**Local event history.** Bipuu records normalised hook events and sessions in `bipuu.sqlite` (0600, in the 0700 support dir). Only names
+and categories are stored: never prompts, commands, paths, file contents, tool input/output or messages ([EVENT_RECORDING.md](EVENT_RECORDING.md)).
+It is not encrypted at rest beyond the user's disk encryption, has no retention limit yet, and can be disabled (`recordEvents`).
+
 **Diagnostics.** `BIPUU_HOOK_TRACE=1` logs one line per hook event (event, agent, shortened session id, tool name) and per approval decision (decision, queue length, card age, AppKit event type) — never prompts, commands, paths or contents.
 
 ---
