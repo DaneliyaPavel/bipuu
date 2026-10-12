@@ -1,22 +1,5 @@
-import Foundation
-
-nonisolated(unsafe) var failures = 0
-nonisolated(unsafe) var passed = 0
-
-func check(_ cond: @autoclosure () async throws -> Bool, _ msg: String = "",
-           file: StaticString = #fileID, line: UInt = #line) async throws {
-    if try await cond() { passed += 1 } else { failures += 1; print("  FAIL \(file):\(line) \(msg)") }
-}
-func checkThrows(file: StaticString = #fileID, line: UInt = #line, _ body: () async throws -> Void) async throws {
-    do { try await body(); failures += 1; print("  FAIL \(file):\(line) expected a throw") }
-    catch { passed += 1 }
-}
-
-func run(_ name: String, _ body: () async throws -> Void) async {
-    let before = failures
-    do { try await body() } catch { failures += 1; print("  ERROR \(name): \(error)") }
-    print("\(failures == before ? "ok  " : "FAIL") \(name)")
-}
+import BipuuChecking
+import BipuuCore
 
 await run("IdentifierTests.idsEncodeAsPlainStrings") { try await IdentifierTests().idsEncodeAsPlainStrings() }
 await run("IdentifierTests.generatedIDsAreUniqueAndHashable") { try await IdentifierTests().generatedIDsAreUniqueAndHashable() }
@@ -37,6 +20,6 @@ await run("InMemoryEventStoreTests.appendIsIdempotentAndQueriesFilter") { try aw
 await run("InMemoryEventStoreTests.recentIsLastNInAscendingOrder") { try await InMemoryEventStoreTests().recentIsLastNInAscendingOrder() }
 await run("IsolationTests.coreImportsOnlyFoundation") { try await IsolationTests().coreImportsOnlyFoundation() }
 await run("IsolationTests.coreHasNoVendorBranching") { try await IsolationTests().coreHasNoVendorBranching() }
+await EventStoreContract.runAll("InMemoryEventStore") { InMemoryEventStore() }
 
-print("\(passed) checks passed, \(failures) failed")
-exit(failures == 0 ? 0 : 1)
+finish()

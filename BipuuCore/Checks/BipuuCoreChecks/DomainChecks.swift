@@ -1,5 +1,6 @@
 import Foundation
 import BipuuCore
+import BipuuChecking
 
 private func roundTrip<T: Codable & Equatable>(_ v: T) throws -> T {
     try BipuuCoding.decoder().decode(T.self, from: BipuuCoding.encoder().encode(v))
@@ -166,27 +167,27 @@ struct InMemoryEventStoreTests {
                        receivedAt: Date(timeIntervalSince1970: t), taskID: task.map { TaskID($0) },
                        sessionID: SessionID(s), kind: .notice, source: EventSource(adapter: "t"))
         }
-        try await check(await store.append(ev("1", 3, s: "A", task: "T")) == .appended)
-        try await check(await store.append(ev("2", 1, s: "A", task: nil)) == .appended)
-        try await check(await store.append(ev("3", 2, s: "B", task: "T")) == .appended)
-        try await check(await store.append(ev("1", 3, s: "A", task: "T")) == .duplicate)
+        try await check(try await store.append(ev("1", 3, s: "A", task: "T")) == .appended)
+        try await check(try await store.append(ev("2", 1, s: "A", task: nil)) == .appended)
+        try await check(try await store.append(ev("3", 2, s: "B", task: "T")) == .appended)
+        try await check(try await store.append(ev("1", 3, s: "A", task: "T")) == .duplicate)
 
-        try await check(await store.events(forSession: SessionID("A")).map(\.id.rawValue) == ["2", "1"])
+        try await check(try await store.events(forSession: SessionID("A")).map(\.id.rawValue) == ["2", "1"])
         // A task spans several sessions.
-        try await check(await store.events(forTask: TaskID("T")).map(\.id.rawValue) == ["3", "1"])
-        try await check(await store.events(forSession: SessionID("none")).isEmpty)
+        try await check(try await store.events(forTask: TaskID("T")).map(\.id.rawValue) == ["3", "1"])
+        try await check(try await store.events(forSession: SessionID("none")).isEmpty)
     }
 
     func recentIsLastNInAscendingOrder() async throws {
         let store = InMemoryEventStore()
         for i in (0..<10).shuffled() {
-            _ = await store.append(AgentEvent(id: EventID("e\(i)"),
+            _ = try await store.append(AgentEvent(id: EventID("e\(i)"),
                 occurredAt: Date(timeIntervalSince1970: Double(i)), receivedAt: Date(timeIntervalSince1970: Double(i)),
                 sessionID: SessionID("s"), kind: .notice, source: EventSource(adapter: "t")))
         }
-        try await check(await store.recentEvents(limit: 3).map(\.id.rawValue) == ["e7", "e8", "e9"])
-        try await check(await store.recentEvents(limit: 100).count == 10)
-        try await check(await store.recentEvents(limit: 0).isEmpty)
+        try await check(try await store.recentEvents(limit: 3).map(\.id.rawValue) == ["e7", "e8", "e9"])
+        try await check(try await store.recentEvents(limit: 100).count == 10)
+        try await check(try await store.recentEvents(limit: 0).isEmpty)
     }
 }
 
@@ -209,7 +210,7 @@ struct IsolationTests {
         let dir = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/BipuuCore")
-        let banned = ["claude", "codex", "gemini", "cursor", "copilot", "zed", "vscode", "jetbrains", "warp"]
+        let banned = ["claude", "codex", "gemini", "cursor", "copilot", "sqlite", "zed", "vscode", "jetbrains", "warp"]
         for f in try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
             let text = try String(contentsOf: f, encoding: .utf8).lowercased()
             for word in banned { try await check(!text.contains(word), "\(f.lastPathComponent) mentions \(word)") }

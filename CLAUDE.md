@@ -9,7 +9,8 @@ with an ambient island at the top of the screen. Read [docs/PRODUCT_VISION.md](d
   models and logic (no AppKit); keep it that way.
 - `Bipuu/project.yml` — XcodeGen project; never edit or commit the generated `.xcodeproj`.
 - `BipuuCore/` — SwiftPM domain core (Foundation only): entities, `AgentEvent`, `EventStore`. Source of truth:
-  [docs/DOMAIN_MODEL.md](docs/DOMAIN_MODEL.md). Verify: `cd BipuuCore && swift run BipuuCoreChecks`.
+  [docs/DOMAIN_MODEL.md](docs/DOMAIN_MODEL.md). Durable store: `BipuuSQLite` ([docs/STORAGE.md](docs/STORAGE.md)).
+  Verify: `cd BipuuCore && swift run BipuuCoreChecks && swift run BipuuSQLiteChecks`.
 - `hook/` — Rust hook relay (seed of the cross-platform `bipuu-hook`). `scripts/`, `tests/` — standalone
   Swift test scripts (`bash scripts/test-*.sh`).
 - `docs/` — vision, architecture, security, IP migration, identifiers, roadmap.

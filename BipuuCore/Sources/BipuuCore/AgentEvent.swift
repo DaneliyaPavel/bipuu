@@ -84,12 +84,15 @@ public struct AgentEvent: Hashable, Sendable, Codable, Identifiable {
         self.kind = kind; self.source = source; self.payload = payload
     }
 
-    /// Canonical ordering: `occurredAt`, then `receivedAt`, then event id (text order).
-    /// Deterministic for any set of events, on any store. It is NOT a causal or global total
-    /// order: `occurredAt` comes from independent clocks.
+    /// Canonical ordering: `occurredAt`, then `receivedAt` (both at whole-microsecond resolution),
+    /// then event id (UTF-8 byte order). A deterministic presentation order for any set of events
+    /// on any store. It is NOT a causal ordering guarantee: `occurredAt` comes from independent
+    /// clocks, and sub-microsecond differences are deliberately ignored.
     public static func canonicalOrder(_ a: AgentEvent, _ b: AgentEvent) -> Bool {
-        if a.occurredAt != b.occurredAt { return a.occurredAt < b.occurredAt }
-        if a.receivedAt != b.receivedAt { return a.receivedAt < b.receivedAt }
+        let (ao, bo) = (a.occurredAt.epochMicroseconds, b.occurredAt.epochMicroseconds)
+        if ao != bo { return ao < bo }
+        let (ar, br) = (a.receivedAt.epochMicroseconds, b.receivedAt.epochMicroseconds)
+        if ar != br { return ar < br }
         return a.id < b.id
     }
 }
@@ -108,4 +111,10 @@ public enum BipuuCoding {
         d.dateDecodingStrategy = .secondsSince1970
         return d
     }
+}
+
+public extension Date {
+    /// Unix time in whole microseconds (rounded). The integer used for ordering and indexing;
+    /// never compare or index event times as floating point.
+    var epochMicroseconds: Int64 { Int64((timeIntervalSince1970 * 1_000_000).rounded()) }
 }
