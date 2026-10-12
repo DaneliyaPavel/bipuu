@@ -665,30 +665,11 @@ final class IslandPanel: NSPanel {
 // MARK: - Notification names
 
 extension Notification.Name {
-    static let triggerEmote     = Notification.Name("bipuu.triggerEmote")
-    static let triggerSlap      = Notification.Name("bipuu.triggerSlap")
-    static let botDizzy         = Notification.Name("bipuu.botDizzy")
-    static let botGreet         = Notification.Name("bipuu.botGreet")
-    static let botBlink         = Notification.Name("bipuu.botBlink")
-    static let botSetTgEs       = Notification.Name("bipuu.botSetTgEs")
-    static let botGulp          = Notification.Name("bipuu.botGulp")
-    static let botMorphTo       = Notification.Name("bipuu.botMorphTo")
-    static let islandAction     = Notification.Name("bipuu.islandAction")
     static let islandCollapse      = Notification.Name("bipuu.islandCollapse")
-    static let voiceShowMailCard   = Notification.Name("bipuu.voiceShowMailCard")
-    static let islandSendMessage   = Notification.Name("bipuu.islandSendMessage")
-    static let islandNewConversation = Notification.Name("bipuu.islandNewConversation")
     static let islandToggleDiff           = Notification.Name("bipuu.islandToggleDiff")
     static let islandActivateCardSelection = Notification.Name("bipuu.islandActivateCardSelection")
     static let openFullSettings    = Notification.Name("bipuu.openFullSettings")
     static let hookReveal       = Notification.Name("bipuu.hookReveal")
-    static let musicReveal      = Notification.Name("bipuu.musicReveal")
-    // Greeting ↔ IslandWindowController
-    static let greetComplete    = Notification.Name("bipuu.greetComplete")
-    static let checkMondayRecap = Notification.Name("bipuu.checkMondayRecap")
-    static let greetingHover    = Notification.Name("bipuu.greetingHover")
-    static let greetingInterrupt = Notification.Name("bipuu.greetingInterrupt")
-    static let openWardrobeFromDesktop = Notification.Name("bipuu.openWardrobeFromDesktop")
     // Island moved to another screen (resting size may differ: notch vs bar)
     static let islandScreenChanged = Notification.Name("bipuu.islandScreenChanged")
 }

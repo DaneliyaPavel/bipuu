@@ -573,7 +573,6 @@ final class HookServer: @unchecked Sendable {
                        externalAgent: isExternalAgent ? validAgent : nil)
             if let idx = state.tasks.firstIndex(where: { $0.id == agentId }) { state.tasks[idx].finalLine = nil }
             bipuuLog("SessionStart \(isExternalAgent ? agentId : projectName) (\(sessionId.prefix(8)))")
-            NotificationCenter.default.post(name: .checkMondayRecap, object: nil)
             if state.isPresent { expandIfNeeded(to: .overview) }
             if agentId == "agent_hermes", let platform = payload["platform"] as? String,
                !platform.isEmpty, platform != "cli" {
@@ -590,7 +589,6 @@ final class HookServer: @unchecked Sendable {
             if let prompt = payload["prompt"] as? String, !prompt.isEmpty {
                 appendStep(id: agentId, step: String(prompt.prefix(60)))
             }
-            NotificationCenter.default.post(name: .checkMondayRecap, object: nil)
             if state.isPresent { expandIfNeeded(to: .overview) }
 
         case "PreToolUse":

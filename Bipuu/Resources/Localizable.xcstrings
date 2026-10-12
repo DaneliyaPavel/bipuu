@@ -181,16 +181,6 @@
         }
       }
     },
-    "Denied": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Denied"
-          }
-        }
-      }
-    },
     "Deny": {
       "localizations": {
         "en": {

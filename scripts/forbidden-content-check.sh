@@ -9,7 +9,7 @@ PATTERN='coucou|mochi|notch ?buddy|example|louis-cfm|TEAMID-REMOVED|example|rhyt
 ALLOW=(
   ':!LICENSE' ':!THIRD_PARTY_NOTICES.md'
   ':!docs/IP_MIGRATION.md' ':!docs/ARCHITECTURE_BASELINE.md' ':!docs/SECURITY_BASELINE.md'
-  ':!docs/ROADMAP.md' ':!docs/PRODUCT_VISION.md' ':!docs/IDENTIFIERS.md'
+  ':!docs/ROADMAP.md' ':!docs/PRODUCT_VISION.md' ':!docs/IDENTIFIERS.md' ':!docs/PHASE1_EXIT.md'
   ':!README.md' ':!CLAUDE.md' ':!CONTRIBUTING.md' ':!scripts/forbidden-content-check.sh'
 )
 fail=0

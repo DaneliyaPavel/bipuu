@@ -34,7 +34,7 @@ extension CGColor {
 }
 
 #if !os(macOS)
-// CGColor.white / .black / .clear only exist on macOS; BotEngine uses them.
+// CGColor.white / .black / .clear only exist on macOS.
 extension CGColor {
     static var white: CGColor { CGColor(gray: 1, alpha: 1) }
     static var black: CGColor { CGColor(gray: 0, alpha: 1) }
