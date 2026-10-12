@@ -1,5 +1,9 @@
 # Phase 1 — exit report
 
+> **Status: implementation complete; foundation not yet release-verified.** The Foundation Verification Gate
+> below must finish (sanitised push → first CI on a full-Xcode runner → green) before this is recorded as the
+> Phase 1 exit and Phase 2 starts. The "xcodebuild / CI result" row at the end is filled in from the real run.
+
 Status of the Phase 1 exit criteria (ROADMAP §Phase 1), with the evidence and the limits of that evidence.
 Everything below was run on a Mac with Command Line Tools only: **no Xcode, no Rust toolchain** were installed.
 
@@ -35,3 +39,30 @@ Everything below was run on a Mac with Command Line Tools only: **no Xcode, no R
 2. First CI run on macOS; fix whatever `xcodebuild` finds.
 3. Confirm the bundle-id domain; Developer ID signing and notarisation need your credentials.
 4. Phase 2 domain model (Project/Task/Agent/Session/Host/Environment/AgentEvent) with SQLite as the source of truth (decisions in ROADMAP).
+
+## Foundation Verification Gate
+
+| Step | Status |
+|---|---|
+| Forbidden-content scan, tree + all history | **Done** (re-run after the scrub below): no protected names, media or character-drawing markers; author identifiers absent from file contents of every commit |
+| History scrub of author data inside file contents | **Done**: Apple Team ID, e-mail, relay host, TestFlight link, private hostnames replaced in all commits. Commit **messages** and authorship are untouched on purpose (provenance); contributor e-mails in commit metadata remain, as in the public upstream |
+| Commit messages mentioning Coucou/Mochi | **Kept as provenance** (decision); protected assets/code/data are not present in any commit |
+| Bundle id | **Unchanged** (`app.bipuu.Bipuu`, provisional until the owner confirms the domain) |
+| Push to `origin` | **Waiting for the owner's confirmation** |
+| First CI on a macOS runner with full Xcode | After the push |
+| Fix real `xcodebuild` failures | After the first run |
+| Baseline tag + this report updated with the real result | After a fully green run |
+
+### xcodebuild / CI result
+
+_Not run yet._
+
+## Phase 3 validation items (do not block Phase 2)
+
+Moved here from the Phase 1 exit criteria; to be done with the adapter work:
+
+1. Live verification of Codex, Gemini CLI, Copilot CLI (and Muse, Hermes, OpenCode, Amp) against real agent binaries and real configs: installer preview/apply/uninstall, event mapping, approval round trip where supported.
+2. Native cross-platform `bipuu-hook` (Rust, from `hook/`): adopt the BIPUU1 channel, build and test on macOS/Linux/Windows, signing/notarisation of the helper binary, latency target (<10 ms).
+3. Full model-driven Claude Code session through `scripts/e2e-hooks.sh --with-claude` (needs `claude login` on the verifying machine).
+4. Live focus-jump to real terminals/editors (`ClaudeHost`/`TerminalTarget`) as part of the `HostAdapter` capabilities model.
+5. Shared config-writer library for all adapters (SECURITY M4).

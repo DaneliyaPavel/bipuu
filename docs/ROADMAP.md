@@ -30,6 +30,8 @@ Exit: `Project → Task → Agent → Session` representable and persisted; exis
 - Shared config-writer library for all adapters (SECURITY M4/M5).
 Exit: no `if agent ==`/`if host ==` in core; hook p95 <10 ms measured; security tests green.
 
+Carried over from Phase 1 (validation, see [PHASE1_EXIT.md](PHASE1_EXIT.md)): live Codex/Gemini/Copilot verification, the Rust `bipuu-hook` on the BIPUU1 channel, a full model-driven Claude Code e2e run, live terminal focus-jump.
+
 ### Phase 4 — Task-centric workspace
 UX architecture + wireframes + data requirements + state model first (doc), then incremental SwiftUI: *Today / Needs you / Recent*, task workspace (plan, changes, tests, git, quality signals, environments, actions). Git/test signals from local `git`/test-run events; CI/deploy as later adapters. Approvals show full `tool_input` and rule scope.
 
