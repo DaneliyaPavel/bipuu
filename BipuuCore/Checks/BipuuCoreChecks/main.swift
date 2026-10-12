@@ -25,5 +25,17 @@ await DomainStoreContract.runAll("InMemoryDomainStore") { InMemoryDomainStore() 
 await run("ProjectionChecks.phases") { try await ProjectionChecks().phases() }
 await run("ProjectionChecks.attention") { try await ProjectionChecks().attention() }
 await run("ProjectionChecks.service") { try await ProjectionChecks().service() }
+await run("InferenceChecks.newSessionGetsAProposedTask") { try await InferenceChecks().newSessionGetsAProposedTask() }
+await run("InferenceChecks.sessionsInTheSameContextShareATask") { try await InferenceChecks().sessionsInTheSameContextShareATask() }
+await run("InferenceChecks.idleGapStartsANewTask") { try await InferenceChecks().idleGapStartsANewTask() }
+await run("InferenceChecks.branchesAreSeparateUnlessAskedOtherwise") { try await InferenceChecks().branchesAreSeparateUnlessAskedOtherwise() }
+await run("InferenceChecks.existingAssignmentsAreNeverTouched") { try await InferenceChecks().existingAssignmentsAreNeverTouched() }
+await run("InferenceChecks.handMadeTasksAreNotJoined") { try await InferenceChecks().handMadeTasksAreNotJoined() }
+await run("InferenceChecks.confirmKeepsGroupingAndNeverOthers") { try await InferenceChecks().confirmKeepsGroupingAndNeverOthers() }
+await run("InferenceChecks.closedTasksAreNotReopened") { try await InferenceChecks().closedTasksAreNotReopened() }
+await run("InferenceChecks.skipsWhatCannotBePlaced") { try await InferenceChecks().skipsWhatCannotBePlaced() }
+await run("InferenceChecks.inferenceKeyPersistsAndOldDataStillDecodes") { try await InferenceChecks().inferenceKeyPersistsAndOldDataStillDecodes() }
+await run("InferenceChecks.gitLocatorFindsRepositoriesWorktreesAndPlainDirectories") { try await InferenceChecks().gitLocatorFindsRepositoriesWorktreesAndPlainDirectories() }
+await run("InferenceChecks.inferenceWorksEndToEndWithTheRealLocator") { try await InferenceChecks().inferenceWorksEndToEndWithTheRealLocator() }
 
 finish()

@@ -213,7 +213,11 @@ struct IsolationTests {
         let banned = ["claude", "codex", "gemini", "cursor", "copilot", "sqlite", "zed", "vscode", "jetbrains", "warp"]
         for f in try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
             let text = try String(contentsOf: f, encoding: .utf8).lowercased()
-            for word in banned { try await check(!text.contains(word), "\(f.lastPathComponent) mentions \(word)") }
+            for word in banned {
+                // Whole words only: "resolved" must not trip over "zed".
+                let found = text.range(of: "\\b\(word)\\b", options: .regularExpression) != nil
+                try await check(!found, "\(f.lastPathComponent) mentions \(word)")
+            }
         }
     }
 }

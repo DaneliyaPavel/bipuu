@@ -11,7 +11,7 @@ with an ambient island at the top of the screen. Read [docs/PRODUCT_VISION.md](d
 - `BipuuCore/` — SwiftPM domain core (Foundation only): entities, `AgentEvent`, `EventStore`. Source of truth:
   [docs/DOMAIN_MODEL.md](docs/DOMAIN_MODEL.md). Durable stores (events + domain state): `BipuuSQLite` ([docs/STORAGE.md](docs/STORAGE.md)).
   Verify: `cd BipuuCore && swift run BipuuCoreChecks && swift run BipuuSQLiteChecks`.
-  The app records hook events through `Bipuu/Sources/App/Recording/` ([docs/EVENT_RECORDING.md](docs/EVENT_RECORDING.md)); the standalone
+  The app records hook events through `Bipuu/Sources/App/Recording/` ([docs/EVENT_RECORDING.md](docs/EVENT_RECORDING.md), [docs/TASK_INFERENCE.md](docs/TASK_INFERENCE.md)); the standalone
   scripts and the dev bundle build the two modules with `scripts/build-core-modules.sh`.
 - `hook/` — Rust hook relay (seed of the cross-platform `bipuu-hook`). `scripts/`, `tests/` — standalone
   Swift test scripts (`bash scripts/test-*.sh`).

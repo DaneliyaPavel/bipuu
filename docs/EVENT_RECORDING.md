@@ -21,8 +21,9 @@ agent ── bipuu-hook (relay) ──BIPUU1──▶ HookServer ─┬─▶ is
   produces `AgentEvent`s of the vendor-neutral vocabulary plus the `Agent`, `Host` and `Session` they belong to.
 - **Deterministic identities.** `agent:<kind>`, `host:<bundle id or terminal program>`, `<agent kind>:<agent's session id>`
   (or agent + working directory when the agent sends no session id). The same message always maps to the same ids.
-- **Sessions start unattached.** No task is inferred. The recorder creates a session on first sight, never overwrites an
-  existing one (it may have been assigned a task meanwhile) and sets `endedAt` on `session.ended`.
+- **Sessions.** The recorder creates a session on first sight, proposes a task for it ([TASK_INFERENCE.md](TASK_INFERENCE.md)), never
+  overwrites an existing one (it may have been assigned a task meanwhile) and sets `endedAt` on `session.ended`.
+- **Attribution.** Each event is stamped with its session's current task and project when it is written.
 - **Times.** Hooks carry no timestamp; `occurredAt` and `receivedAt` are both the moment Bipuu received the message.
 
 ## Mapping
@@ -54,7 +55,7 @@ checks the real database. Capturing content would be a separate, explicit, opt-i
 
 The database is `~/Library/Application Support/Bipuu/bipuu.sqlite` (override: `BIPUU_EVENT_DB`), created owner-only (0600)
 inside the 0700 support directory. Recording is on by default and can be turned off with the `recordEvents` default
-(`defaults write app.bipuu.Bipuu recordEvents -bool false`) or `BIPUU_RECORD_EVENTS=0`. Nothing leaves the machine.
+(`defaults write app.bipuu.Bipuu recordEvents -bool false`) or `BIPUU_RECORD_EVENTS=0`. Task inference has its own switch (`inferTasks`, `BIPUU_INFER_TASKS=0`). Nothing leaves the machine.
 
 ## Verification
 
@@ -63,6 +64,5 @@ inside the 0700 support directory. Recording is on by default and can be turned 
 
 ## Deferred
 
-Retention and size limits (the database grows without bound for now) · recording content (opt-in) · task inference from
-sessions · environments · restoring island state from the log · a settings switch in the UI · reading the log for any
+Retention and size limits (the database grows without bound for now) · recording content (opt-in) · environments · restoring island state from the log · a settings switch in the UI · reading the log for any
 feature (nothing reads it yet).

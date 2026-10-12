@@ -70,6 +70,12 @@ final class HookServer: @unchecked Sendable {
     /// Who each queued permission request belongs to, so its resolution is recorded for the same session.
     @MainActor private var approvalIdentities: [UUID: HookIdentity] = [:]
 
+    /// Proposing tasks for new sessions is on unless the `inferTasks` default is false (or `BIPUU_INFER_TASKS=0`).
+    static var inferenceEnabled: Bool {
+        if ProcessInfo.processInfo.environment["BIPUU_INFER_TASKS"] == "0" { return false }
+        return UserDefaults.standard.object(forKey: "inferTasks") as? Bool ?? true
+    }
+
     /// Event recording is on unless the `recordEvents` default is set to false (or `BIPUU_RECORD_EVENTS=0`).
     static var recordingEnabled: Bool {
         if ProcessInfo.processInfo.environment["BIPUU_RECORD_EVENTS"] == "0" { return false }
@@ -319,8 +325,8 @@ final class HookServer: @unchecked Sendable {
         }
         installHookScript()
         if Self.recordingEnabled {
-            recorder = EventRecorder(databasePath: EventRecorder.defaultDatabasePath(supportDir: dir),
-                                     log: { appendAppLog("bipuu.log", $0) })
+            recorder = EventRecorder.standard(supportDir: dir, inferTasks: Self.inferenceEnabled,
+                                              log: { appendAppLog("bipuu.log", $0) })
         }
         Thread.detachNewThread { self.serverThread() }
     }

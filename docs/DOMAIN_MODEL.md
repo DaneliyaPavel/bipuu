@@ -8,7 +8,7 @@ document disagree, fix one of them in the same commit.
 | Entity | Is | Key fields |
 |---|---|---|
 | `Project` | A body of work rooted in locations | name, roots |
-| `WorkTask` (`TaskID`) | A unit of work the user cares about | projectID?, title, origin, status |
+| `WorkTask` (`TaskID`) | A unit of work the user cares about | projectID?, title, origin, status, inferenceKey? |
 | `Agent` | Logical agent identity + capabilities | kind (opaque), capabilities |
 | `Session` | One run of one agent | taskID?, agentID, hostID?, environmentID?, externalRef? |
 | `Host` | Where interaction happens | kind, identity (adapter key), capabilities |
@@ -64,6 +64,9 @@ A session is a run; a task is the work. Never 1:1 by construction. One task can 
 merge tasks (repoint sessions), split work, attach several agents, move a task between projects.
 None of these operations are implemented yet.
 
+Inferred tasks (`origin == .inferred`) are proposed by Bipuu from session activity and are provisional until the user confirms them;
+`inferenceKey` is the context new sessions are matched against. See [TASK_INFERENCE.md](TASK_INFERENCE.md).
+
 ## 6. AgentEvent envelope (schema version 1)
 
 `id, schemaVersion, occurredAt, receivedAt, projectID?, taskID?, sessionID, agentID?, hostID?,
@@ -116,6 +119,6 @@ events of the canonical order, ascending.
 
 ## 9. Deferred on purpose
 
-Deleting entities, merging/splitting tasks · `Result` entity · task inference · project discovery ·
+Deleting entities, merging/splitting tasks · UI for confirming proposed tasks · `Result` entity · task inference · project discovery ·
 AgentAdapter / HostAdapter protocols · HookServer producing `AgentEvent` · cost tracking ·
 CI/deploy models · event retention/compaction · cross-source clock correction · sync between machines.
