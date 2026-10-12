@@ -431,14 +431,17 @@ await run("kill -9 in the middle of writing: every acknowledged write survives a
         child.arguments = ["--crash-child", path, String(next)]
         let pipe = Pipe(), box = LineBox()
         child.standardOutput = pipe; child.standardError = FileHandle.nullDevice
-        pipe.fileHandleForReading.readabilityHandler = { box.add($0.availableData) }
         try child.run()
+        try? pipe.fileHandleForWriting.close()               // our copy: without this the reader never sees end-of-file
+        // A thread that reads until end-of-file: when it is done, every ack the child managed to print is counted.
+        let reading = DispatchGroup(); reading.enter()
+        let reader = pipe.fileHandleForReading
+        Thread { while true { let d = reader.availableData; if d.isEmpty { break }; box.add(d) }; reading.leave() }.start()
         let deadline = Date().addingTimeInterval(60)
         while (box.acks.last ?? -1) < next + target, Date() < deadline, child.isRunning { try await Task.sleep(for: .milliseconds(5)) }
         kill(child.processIdentifier, SIGKILL)               // no goodbye: no close(), no checkpoint, no atexit
         child.waitUntilExit()
-        pipe.fileHandleForReading.readabilityHandler = nil
-        box.add(pipe.fileHandleForReading.readDataToEndOfFile())     // acks the child printed just before it died
+        await withCheckedContinuation { c in reading.notify(queue: .global()) { c.resume() } }   // end-of-file: nothing the child printed is left unread
         acked.formUnion(box.acks)
         try await check(child.terminationReason == .uncaughtSignal && child.terminationStatus == SIGKILL, "round \(round): the child was killed, not exited")
         try await check(box.acks.count >= target, "round \(round): the child made progress (\(box.acks.count) acks)")
@@ -451,10 +454,11 @@ await run("kill -9 in the middle of writing: every acknowledged write survives a
         let stored = try await events.recentEvents(limit: 1_000_000)
         let storedIndexes = Set(stored.compactMap { Int($0.id.rawValue.dropFirst()) })
         try await check(acked.isSubset(of: storedIndexes), "round \(round): lost acknowledged events: \(acked.subtracting(storedIndexes).sorted().prefix(5))")
-        // The write that was in flight when the process died is either fully there or not at all: at most one extra, never a gap.
+        // The write that was in flight when a process died is either fully there or not at all, so each kill can leave at most
+        // one stored-but-unacknowledged event behind (and never a gap): after `round + 1` kills, at most `round + 1` extras.
         let top = storedIndexes.max() ?? -1
         try await check(storedIndexes == Set(0...top), "round \(round): no gaps in the log")
-        try await check(storedIndexes.count - acked.count <= 1, "round \(round): at most the one in-flight event is unacknowledged")
+        try await check(storedIndexes.count - acked.count <= round + 1, "round \(round): at most one in-flight event per kill is unacknowledged (\(storedIndexes.count - acked.count) extra)")
         for i in acked.sorted() { if try await domain.session(SessionID("s\(i)")) == nil { try await check(false, "round \(round): session s\(i) lost"); break } }
         // It keeps working: a normal append after the crash.
         try await check(try await events.append(ev("after\(round)", occ: 1e6 + Double(round), session: "after")) == .appended)
