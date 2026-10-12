@@ -1,5 +1,6 @@
 .DS_Store
 target/
+.build/
 Bipuu/Bipuu.xcodeproj/
 Bipuu/Resources/Info.plist
 __pycache__/
