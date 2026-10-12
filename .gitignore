@@ -4,3 +4,9 @@ Bipuu/Bipuu.xcodeproj/
 Bipuu/Resources/Info.plist
 __pycache__/
 *.pyc
+
+# Local-only working material, never part of the repository
+.provenance/
+.work/
+*.bundle
+.serena/
