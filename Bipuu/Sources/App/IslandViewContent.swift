@@ -16,6 +16,7 @@ struct IslandViewContent: View {
         case .finished:  FinishedView(state: state)
         case .note:      NoteView(state: state)
         case .settings:  SettingsIslandView(state: state)
+        case .work:      WorkView(state: state)
         }
     }
 }

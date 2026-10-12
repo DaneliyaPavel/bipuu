@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Bipuu", action: #selector(openIsland), keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "work.open", defaultValue: "Work"), action: #selector(openWork), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(.separator())
@@ -49,6 +50,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openIsland() {
         islandController?.fsm.openedExternally()
         islandController?.expand(to: .overview)
+    }
+
+    @objc private func openWork() {
+        islandController?.fsm.openedExternally()
+        islandController?.expand(to: .work)
     }
 
     private var settingsWindow: NSWindow?

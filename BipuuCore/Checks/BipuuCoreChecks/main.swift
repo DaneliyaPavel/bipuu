@@ -38,5 +38,10 @@ await run("InferenceChecks.inferenceKeyPersistsAndOldDataStillDecodes") { try aw
 await run("InferenceChecks.gitLocatorFindsRepositoriesWorktreesAndPlainDirectories") { try await InferenceChecks().gitLocatorFindsRepositoriesWorktreesAndPlainDirectories() }
 await run("InferenceChecks.hostileRepositoriesCannotStallOrExhaustTheLocator") { try await InferenceChecks().hostileRepositoriesCannotStallOrExhaustTheLocator() }
 await run("InferenceChecks.inferenceWorksEndToEndWithTheRealLocator") { try await InferenceChecks().inferenceWorksEndToEndWithTheRealLocator() }
+await run("OverviewChecks.emptyWorldIsEmpty") { try await OverviewChecks().emptyWorldIsEmpty() }
+await run("OverviewChecks.ordersByAttentionThenActivityAndGroupsByProject") { try await OverviewChecks().ordersByAttentionThenActivityAndGroupsByProject() }
+await run("OverviewChecks.showsOnlyOpenTasksAndCountsUnattachedSessions") { try await OverviewChecks().showsOnlyOpenTasksAndCountsUnattachedSessions() }
+await run("OverviewChecks.marksProposalsAndHonoursTheLimit") { try await OverviewChecks().marksProposalsAndHonoursTheLimit() }
+await run("OverviewChecks.isReadOnly") { try await OverviewChecks().isReadOnly() }
 
 finish()

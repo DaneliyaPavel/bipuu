@@ -33,8 +33,10 @@ final class EventRecorder: Sendable {
     }
 
     /// `databasePath` is opened lazily on the first item, so starting the app never waits for the disk.
+    /// `onWrite` is called on the consumer's thread after each event is stored (used to refresh the work view).
     /// With an `inference` policy, a session seen for the first time is proposed a task (see `TaskInferrer`).
-    init(databasePath: String, inference: InferencePolicy? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
+    init(databasePath: String, inference: InferencePolicy? = nil, onWrite: (@Sendable () -> Void)? = nil,
+         log: @escaping @Sendable (String) -> Void = { _ in }) {
         let (stream, continuation) = AsyncStream<Message>.makeStream(bufferingPolicy: .bufferingNewest(Self.queueLimit))
         self.continuation = continuation
         let counters = counters
@@ -50,6 +52,7 @@ final class EventRecorder: Sendable {
                         if sink == nil { sink = try Sink(path: databasePath, inference: inference, log: log) }
                         try await sink?.write(item)
                         counters.record()
+                        onWrite?()
                     } catch {
                         counters.fail()
                         if sink == nil {
@@ -105,9 +108,11 @@ final class EventRecorder: Sendable {
 
     /// The recorder the app runs with: the standard database; and, when `inferTasks`, task inference
     /// that treats the file system root and the home directory as too broad to be a project.
-    static func standard(supportDir: URL, inferTasks: Bool, log: @escaping @Sendable (String) -> Void) -> EventRecorder {
+    static func standard(supportDir: URL, inferTasks: Bool, onWrite: (@Sendable () -> Void)? = nil,
+                         log: @escaping @Sendable (String) -> Void) -> EventRecorder {
         EventRecorder(databasePath: defaultDatabasePath(supportDir: supportDir),
-                      inference: inferTasks ? InferencePolicy(excludedRoots: ["/", NSHomeDirectory()]) : nil, log: log)
+                      inference: inferTasks ? InferencePolicy(excludedRoots: ["/", NSHomeDirectory()]) : nil,
+                      onWrite: onWrite, log: log)
     }
 
     /// `BIPUU_EVENT_DB` overrides the path (used by the end-to-end script so it never touches real data).

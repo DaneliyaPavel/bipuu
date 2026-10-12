@@ -64,5 +64,4 @@ inside the 0700 support directory. Recording is on by default and can be turned 
 
 ## Deferred
 
-Retention and size limits (the database grows without bound for now) · recording content (opt-in) · environments · restoring island state from the log · a settings switch in the UI · reading the log for any
-feature (nothing reads it yet).
+Retention and size limits (the database grows without bound for now) · recording content (opt-in) · environments · restoring island state from the log · a settings switch in the UI. The [work view](WORK_VIEW.md) is the first reader of the log.
