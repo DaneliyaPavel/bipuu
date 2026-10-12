@@ -126,12 +126,27 @@ CLAUDE.md of Coucou forbids renaming bundle id/pill ids **for Coucou**; that con
 
 Estimated outcome: Swift 47.6k → ~28–30k, before `IslandViewContent` is rewritten.
 
-## 10. Execution checklist (Phase 1)
+## 10. Execution checklist (Phase 1) — status
 
-- [ ] Create `bipuu` repo content from Coucou with history preserved (preserves authorship + enables `git log` provenance checks); `upstream` remote → coucou, `origin` → bipuu. *(Decision pending: history vs squash.)*
-- [ ] Add `LICENSE` (Bipuu copyright + preserved Raillé MIT text), `THIRD_PARTY_NOTICES.md`.
-- [ ] Delete §3 assets and §4 code; add neutral placeholder icon and `NullCharacterRenderer`.
-- [ ] Purge §5 personal data and the default relay URL.
-- [ ] Drop `LICENSE-ASSETS.md` references; do **not** copy it into Bipuu.
-- [ ] CI guard: grep for `coucou|mochi|notchbuddy|example|TEAMID-REMOVED|example` must fail the build outside `docs/IP_MIGRATION.md` and `THIRD_PARTY_NOTICES.md`.
-- [ ] Run existing tests; build; verify hook flow end-to-end with Claude Code.
+- [x] Import with history (sanitised, see §11); `origin` = Bipuu, `upstream` = Coucou (fetch URL only, push disabled; the full original history lives in a private local mirror, never in this repository).
+- [x] `LICENSE` (Bipuu contributors + preserved Raillé MIT text), `THIRD_PARTY_NOTICES.md`; Coucou's asset licence file is **not** copied.
+- [x] §3 assets and §4 character code deleted (tree **and** history); neutral generated placeholder icon (`scripts/make-placeholder-icon.swift`); `CharacterRenderer` seam + `AgentAvatarView`.
+- [x] §5 personal data and the default relay URL removed; no Apple team id, signing identity, iCloud/APNs identifiers, URL scheme or third-party endpoint remains.
+- [x] CI guard: `scripts/forbidden-content-check.sh --history` (names, author identifiers, protected media types in the tree and in every commit).
+- [x] Tests run (20 scripts, incl. 42 relay tests and 38 approval-description checks); app builds with swiftc; verified against a real running app (`scripts/e2e-hooks.sh`).
+- [ ] Legal review before public release (open).
+- [ ] Decide whether commit *messages* that mention the Coucou/Mochi names may stay (see §11).
+
+## 11. History sanitation (how, and what remains)
+
+Method: `git filter-repo` on a single-branch clone of Coucou `main`, tags dropped, removing from **every** commit:
+all media by extension (png, jpg, gif, mp4, wav, ico, icns, webp, p12, jar), `design/`, `docs/media`, site pages, `android/`, `relay/`,
+`linux/`, Windows screenshots/icons and the Mochi TypeScript ports, every file that draws the Mochi character
+(`BotEngine`, outfits, wardrobe, still/live-activity art, greeting/upload canvases, desktop pet), the French spec and
+historical prompt docs. A scan of all 442 resulting commits finds none of the character-drawing markers, and no media blob.
+`IslandViewContent.swift` (whose history contained the outfit-icon drawing code) was purged from history and re-added, edited, in a normal commit,
+so its per-line blame starts there. Authorship of all other retained files is preserved (≈50 contributors).
+
+**Residual, accepted pending your call:** commit messages (≈450) and some historical file text mention "Coucou"/"Mochi" as names. Mentioning
+a name is not using it as a brand, but if you want a history with no mention at all, the alternative is a single squashed initial commit plus an
+`AUTHORS` file; the private mirror keeps the full provenance either way. Not verified: byte-identity of icons/sounds across platforms (they are all gone).

@@ -1,5 +1,32 @@
 # Bipuu — Security Baseline (audit of Coucou @ `0dffbaf`)
 
+## Status after Phase 1
+
+| Finding | Status | What changed |
+|---|---|---|
+| **H1** card hides the operation | **Fixed** | The card shows the operation in full (`ApprovalDescriber`): whole command, file path and the text replaced or written, URL, MCP arguments; invisible and bidi characters shown as `⟨U+…⟩`; scrolls instead of clipping; anything cut at 16 KB is flagged in red. **Always** is offered only when its exact effect can be shown (each rule from `permission_suggestions` and where it is saved); Codex/Copilot/Muse have no durable rule so they get no Always; a decision of `always` for a request that did not offer it is refused. 38 unit checks. |
+| **H2** relay trusts any server | **Fixed (macOS)** | Protocol BIPUU1: per-install key (`channel.key`, 0600), HMAC-SHA256 over every request with a fresh nonce, signed replies bound to that nonce. The relay ignores any reply whose signature does not verify, refuses a key/socket/directory that others can reach, and checks the peer uid; the app drops unsigned messages without a reply. 42 relay tests (incl. squatter, unsigned, replay, tamper, loose permissions), mutation-checked; Swift↔Python MAC vectors; verified against the real app. |
+| M1 forged cards / queue stuffing | **Fixed** by H2 | Unsigned messages never reach processing (verified: a forged `PermissionRequest` produced no event). |
+| M1 socket replaced blindly | **Fixed** | The app never removes a live socket or a foreign file; a second instance quits. |
+| M2 iPhone/CloudKit remote channel | **Removed** | Not in the tree. |
+| M3 unauthenticated push relay | **Removed** | Not in the tree; no third-party default endpoints remain. |
+| M4 weaker config writers | Open | Phase 3: one shared config-writer for all adapters. |
+| M5 substring uninstall | **Fixed** | Ownership is the explicit `bipuu-hook` marker; Coucou's hooks are never touched. |
+| M6 Windows/Linux relay | Open | `hook/` still speaks the old protocol and is not wired; adopt BIPUU1 before use. |
+| L6 window-context capture, L5 file drop | **Removed** | |
+| **New** accidental approval clicks | **Fixed** | A card can pop up under a click aimed elsewhere. During e2e runs a real mouse-up answered a test card ~3 s after it appeared (the trace now records the AppKit event type). Allow/Always are inactive for 0.8 s after a card appears, enforced in the UI and again in the server; Deny is always immediate. |
+
+**Boundary, stated plainly.** BIPUU1 protects against anything that cannot read `channel.key`: a process squatting the socket
+path, forged approval cards, replayed or altered replies, loosened permissions. It does **not** defend against malware running
+as the same user — that code can read the key and could equally rewrite the agent's own settings. A stronger boundary needs a
+channel that requires user presence outside the user's session (future work), not more crypto on this one.
+
+**Diagnostics.** `BIPUU_HOOK_TRACE=1` logs one line per hook event (event, agent, shortened session id, tool name) and per approval decision (decision, queue length, card age, AppKit event type) — never prompts, commands, paths or contents.
+
+---
+
+## Original audit (Coucou @ `0dffbaf`)
+
 Read-only source audit; nothing built or run. Severity is for Bipuu's threat model (local-first developer tool that can approve agent actions).
 
 ## Findings

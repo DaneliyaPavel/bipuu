@@ -1,6 +1,6 @@
 # Bipuu — Roadmap
 
-Status: **Phase 0 (audit) complete.** No source imported, no repo initialised yet.
+Status: **Phase 0 (audit) complete. Phase 1 (clean foundation) implemented locally** — see [PHASE1_EXIT.md](PHASE1_EXIT.md). Sanitised history is committed locally and **not pushed**.
 
 ## Repository / upstream strategy
 - `origin` → `https://github.com/DaneliyaPavel/bipuu` (currently empty). `upstream` → `https://github.com/louis-cfm/coucou`.
@@ -9,7 +9,7 @@ Status: **Phase 0 (audit) complete.** No source imported, no repo initialised ye
 
 ## Phases
 
-### Phase 1 — Clean Bipuu foundation  *(gating, mostly mechanical)*
+### Phase 1 — Clean Bipuu foundation  *(done locally; push and first CI pending)*
 Exit criteria: builds; existing tests pass; Claude Code hook flow works end-to-end (SessionStart → tool use → permission card → Stop); **zero** hits for the forbidden-string CI grep; no protected assets; neutral placeholder icon; `LICENSE` + `THIRD_PARTY_NOTICES` correct.
 1. Import with history, set remotes, tag baseline.
 2. Replace Mochi: introduce `CharacterRenderer` protocol + `NullCharacterRenderer` (a plain status dot/ring), delete BotEngine/outfits/greeting/upload/desktop pet/Live Activity art.
@@ -52,11 +52,18 @@ Policy engine (auto-allow/ask/confirm tiers), usage/cost signals, quality signal
 Why this first: (a) it is the **only gating legal risk** — nothing can be shipped, shown or even published to the public Bipuu repo while MIT code that renders the reserved character is in it; (b) it creates the exact seam Phase 6 needs (replaceable renderer); (c) it removes the two biggest steady-state CPU costs found (idle full-rate redraw, desktop pet) and the unsolicited third-party data flow; (d) it shrinks the codebase by roughly a third before we refactor, which lowers the cost of every later step; (e) it is mechanical and testable (build + existing tests + forbidden-string grep), so it does not need product decisions.
 **Immediately after (still Phase 1):** characterisation tests for the hook contract, because the next real engineering step — splitting `HookServer` into core + adapters + native relay — has zero test coverage today.
 
-## Open decisions (defaults proposed; confirm when convenient)
-1. Import Coucou **with history** (default) vs squash.
-2. **Drop App Store build** for v1 (default: yes — sandbox conflicts with installing hooks into other tools' dotfiles).
-3. Keep `windows/` in tree? Default: keep `windows/hook` (Rust relay) in the repo as the seed of `bipuu-hook`; park the Tauri UI directory outside the macOS build until a Windows/Linux phase.
-4. Persistence tech for Phase 2 (SQLite vs append-only event log + snapshots).
-5. Task inference policy (what creates a Task: first prompt in a session? explicit command? agent-declared?).
-6. Distribution: Developer ID + notarisation (matches Coucou's pipeline) and own update mechanism.
-7. Legal review of this migration before public release.
+## Decisions taken (owner)
+
+1. History: keep the full Coucou history privately for provenance; publish only sanitised history. **Done locally; nothing pushed.**
+2. No App Store build in v1; Developer ID + Hardened Runtime + notarisation, own updater later.
+3. Windows/Linux: keep `hook/` as the seed of `bipuu-hook`; Tauri UI parked (tag `parked/windows-tauri-ui`).
+4. Persistence: **SQLite as the durable source of truth**, event-oriented: append-only `AgentEvent`, Project/Task/Agent/Session/Host/Environment/Approval/Artifact tables, projections for current UI state; schema versioning and migrations, bounded retention of noisy raw events, transactional writes, crash-safe recovery, a storage abstraction so UI and domain never see SQLite, no heavy ORM.
+5. Tasks: explicit when work starts inside Bipuu; **provisional inferred Task** for externally discovered sessions (git root, cwd, branch, first meaningful prompt, agent/session identity, explicit metadata), with rename/merge/reassign/split/move later. Session ≠ Task; the schema must allow reassignment.
+6. Security gating: H1 and H2 before approvals are trusted — **done** (see SECURITY_BASELINE).
+
+## Still open
+
+1. Whether commit messages that mention the Coucou/Mochi names may stay in the public history (IP_MIGRATION §11).
+2. The reverse-DNS domain for the bundle id (IDENTIFIERS.md).
+3. Legal review before public release.
+4. Signing identity and notarisation credentials (yours to provide).
