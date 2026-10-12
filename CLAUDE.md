@@ -1,32 +1,37 @@
-# Coucou — guide for AI coding agents
+# Bipuu — guide for AI coding agents
 
-Coucou is a native macOS app (`NotchBuddy/`); `windows/` is the Tauri version for Windows and Linux. Mochi, a small animated character living in the MacBook notch, shows AI coding agent sessions (Claude Code, Gemini CLI, Antigravity and more) and a few integrations, and lets the user approve, answer, chat and drop files from the notch.
+Bipuu is a macOS-first control plane for AI software agents (agent sessions → tasks → projects),
+with an ambient island at the top of the screen. Read [docs/PRODUCT_VISION.md](docs/PRODUCT_VISION.md) first;
+[docs/ARCHITECTURE_BASELINE.md](docs/ARCHITECTURE_BASELINE.md) maps the current code.
 
 ## Where things are
-- `NotchBuddy/Sources/App/` — Mac-only Swift code. `NotchBuddy/Sources/CoucouKit/` — code shared with the iPhone app (Mochi's BotEngine and outfits, pills, diff, models). `NotchBuddy/Sources/Phone/` — iPhone app (`CoucouPhone` target), with its widgets in `Sources/Widgets/` and the expanded approval notification in `Sources/NotificationContent/`. `NotchBuddy/Resources/sounds/` — the 28 WAV sounds. `NotchBuddy/project.yml` — XcodeGen project (never edit the `.xcodeproj` by hand).
-- `NotchBuddy/Sources/CoucouKit/PillCatalog.swift` — single source of truth for all declared pills (workspace tools, agents, AI providers, services). Every pill ID, color, category and subtitle lives here.
-- `docs/SPEC.md`, `docs/INTEGRATIONS.md` — behaviour, views, states, integrations (in French).
-- `design/prototype/notch-buddy.html` — original prototype, the visual source of truth. `design/captures/` — target screenshots.
-- `windows/` — the Tauri app for Windows and Linux: Rust in `src-tauri/`, TypeScript in `src/`, the `coucou-hook` relay in `hook/`. `windows/README.md` lists what differs from the Mac.
-- `docs/*.html` — the GitHub Pages site (privacy, terms, support, legal notice).
-- `relay/` — the Coucou relay, a stateless Cloudflare Worker that forwards the iPhone Live Activity pushes (it holds the APNs key, which must never ship in an app). See `relay/README.md`.
+- `Bipuu/Sources/App/` — macOS-only Swift (AppKit + SwiftUI). `Bipuu/Sources/BipuuKit/` — platform-neutral
+  models and logic (no AppKit); keep it that way.
+- `Bipuu/project.yml` — XcodeGen project; never edit or commit the generated `.xcodeproj`.
+- `hook/` — Rust hook relay (seed of the cross-platform `bipuu-hook`). `scripts/`, `tests/` — standalone
+  Swift test scripts (`bash scripts/test-*.sh`).
+- `docs/` — vision, architecture, security, IP migration, identifiers, roadmap.
 
-## Build
+## Build / verify
 ```
-cd NotchBuddy && xcodegen && xcodebuild -scheme NotchBuddy -configuration Debug build
+cd Bipuu && xcodegen && xcodebuild -scheme Bipuu -configuration Debug build
+for s in scripts/test-*.sh; do bash $s; done
+scripts/forbidden-content-check.sh
 ```
-Windows and Linux: `cd windows && npm install && npm run tauri dev`
+Without full Xcode, typecheck with `swiftc -typecheck` against the macOS 26.5 SDK (the 27 SDK needs the
+SwiftUI macro plugin that only ships with Xcode).
 
 ## Rules
-- Swift 6, SwiftUI + AppKit. No third-party dependencies unless truly unavoidable. The character is drawn in code (`Canvas` + `TimelineView`), no Rive/Lottie/images.
-- Secrets live in the Keychain, never on disk or in git.
-- No telemetry. Network calls only to services the user configured.
-- Never block Claude Code: if the app doesn't answer, the hook exits immediately.
-- Never overwrite `~/.claude/settings.json`: dated backup, merge, show the diff, write only after the user confirms.
-- Never send an email or approve a Claude Code or Codex permission without an explicit click.
-- Performance: 0 % CPU when the island is hidden.
-- Keep the bundle identifier `app.example.NotchBuddy` (Keychain items, preferences and permissions depend on it).
-- Never restyle what already ships (pills, cards, Settings, chat…): existing views stay exactly as they are in `main`, which is the App Store build. Change the look of an existing view only when explicitly asked.
-- Pill IDs are stable contract values (Keychain, UserDefaults, hook routing): never rename an existing pill ID.
-- New views follow the existing app style. `design/prototype/notch-buddy.html` and `design/captures/` are references for new work, not a reason to change existing views.
-- Every release adds its CHANGELOG.md section, a row in the README Versions table, and commits the regenerated Info.plist with the new version.
+- Swift 6, strict concurrency. No third-party dependencies unless truly unavoidable.
+- Core concepts are Project, Task, Agent, Session, Host, Environment, AgentEvent, Approval. Vendors
+  (Claude, Cursor, Zed, GitHub…) are adapters; never add `if host == "…"` / `if agent == "…"` to core code.
+- Secrets only in the Keychain, never in files or logs. No telemetry. Network calls only to services the
+  user configured; no third-party default endpoints.
+- Never block the agent: if Bipuu does not answer, the hook exits and the agent asks in its own UI.
+- Never overwrite another tool's config: dated backup, merge, show the diff, write after confirmation, and
+  only touch entries marked as Bipuu's (`bipuu-hook`).
+- Never approve anything without an explicit click. The approval card must show the full operation.
+- Performance is a requirement: 0 % CPU when hidden, no polling for unconfigured features.
+- The Coucou/Mochi identity (names, character, artwork, sounds) is not part of this project. Do not
+  recreate or imitate it. `scripts/forbidden-content-check.sh` enforces this in CI.
+- Identifiers are a contract: see [docs/IDENTIFIERS.md](docs/IDENTIFIERS.md) before renaming one.

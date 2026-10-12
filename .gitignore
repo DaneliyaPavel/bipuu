@@ -1,2 +1,4 @@
 .DS_Store
 target/
+Bipuu/Bipuu.xcodeproj/
+Bipuu/Resources/Info.plist

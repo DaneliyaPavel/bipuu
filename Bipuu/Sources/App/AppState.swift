@@ -23,7 +23,7 @@ final class AppState: ObservableObject {
     var notchHeight: CGFloat = IslandConst.notchHeight
     var hasNotch = true
 
-    // Last app active before NotchBuddy (for window context capture)
+    // Last app active before Bipuu (for window context capture)
     var lastExternalApp: NSRunningApplication? = nil
 
     // Mouse tracking
@@ -40,7 +40,7 @@ final class AppState: ObservableObject {
     // Number of navigable items in the card currently on screen (0 = no list)
     @Published var cardItemCount: Int = 0
 
-    // A colour of the user's own for each pill's Mochi (pill id → "#RRGGBB") — persisted.
+    // A colour of the user's own for each pill's avatar (pill id → "#RRGGBB") — persisted.
     // Empty means the catalog's colours. PillDefinition.color reads the stored value, so
     // what is built from the catalog follows on its own; the tasks already on the island
     // hold a copy of their colour and are repainted here.
@@ -58,7 +58,7 @@ final class AppState: ObservableObject {
             if changed { tasks = repainted }
         }
     }
-    /// Picks a colour for a pill's Mochi; nil, or the pill's own catalog colour, goes back to the default.
+    /// Picks a colour for a pill's avatar; nil, or the pill's own catalog colour, goes back to the default.
     func setPillColor(_ id: String, _ hex: String?) {
         guard let def = PillCatalog.definition(for: id) else { return }
         pillColors = PillColors.picking(hex, for: id, catalogColor: def.defaultColor, in: pillColors)

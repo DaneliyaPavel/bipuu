@@ -189,7 +189,7 @@ final class IslandWindowController: NSWindowController {
     }
 
     // MARK: - Polling loop
-    // 60 Hz while the island is on screen, Mochi is on the desktop, a drag is under way or the
+    // 60 Hz while the island is on screen, a drag is under way or the
     // pointer is near the island; 8 Hz (with timer tolerance) while it is hidden and the pointer
     // is elsewhere, so a hidden island costs next to nothing (CLAUDE.md: 0 % CPU when hidden).
 
@@ -665,32 +665,32 @@ final class IslandPanel: NSPanel {
 // MARK: - Notification names
 
 extension Notification.Name {
-    static let triggerEmote     = Notification.Name("notchBuddy.triggerEmote")
-    static let triggerSlap      = Notification.Name("notchBuddy.triggerSlap")
-    static let botDizzy         = Notification.Name("notchBuddy.botDizzy")
-    static let botGreet         = Notification.Name("notchBuddy.botGreet")
-    static let botBlink         = Notification.Name("notchBuddy.botBlink")
-    static let botSetTgEs       = Notification.Name("notchBuddy.botSetTgEs")
-    static let botGulp          = Notification.Name("notchBuddy.botGulp")
-    static let botMorphTo       = Notification.Name("notchBuddy.botMorphTo")
-    static let islandAction     = Notification.Name("notchBuddy.islandAction")
-    static let islandCollapse      = Notification.Name("notchBuddy.islandCollapse")
-    static let voiceShowMailCard   = Notification.Name("notchBuddy.voiceShowMailCard")
-    static let islandSendMessage   = Notification.Name("notchBuddy.islandSendMessage")
-    static let islandNewConversation = Notification.Name("notchBuddy.islandNewConversation")
-    static let islandToggleDiff           = Notification.Name("notchBuddy.islandToggleDiff")
-    static let islandActivateCardSelection = Notification.Name("notchBuddy.islandActivateCardSelection")
-    static let openFullSettings    = Notification.Name("notchBuddy.openFullSettings")
-    static let hookReveal       = Notification.Name("notchBuddy.hookReveal")
-    static let musicReveal      = Notification.Name("notchBuddy.musicReveal")
+    static let triggerEmote     = Notification.Name("bipuu.triggerEmote")
+    static let triggerSlap      = Notification.Name("bipuu.triggerSlap")
+    static let botDizzy         = Notification.Name("bipuu.botDizzy")
+    static let botGreet         = Notification.Name("bipuu.botGreet")
+    static let botBlink         = Notification.Name("bipuu.botBlink")
+    static let botSetTgEs       = Notification.Name("bipuu.botSetTgEs")
+    static let botGulp          = Notification.Name("bipuu.botGulp")
+    static let botMorphTo       = Notification.Name("bipuu.botMorphTo")
+    static let islandAction     = Notification.Name("bipuu.islandAction")
+    static let islandCollapse      = Notification.Name("bipuu.islandCollapse")
+    static let voiceShowMailCard   = Notification.Name("bipuu.voiceShowMailCard")
+    static let islandSendMessage   = Notification.Name("bipuu.islandSendMessage")
+    static let islandNewConversation = Notification.Name("bipuu.islandNewConversation")
+    static let islandToggleDiff           = Notification.Name("bipuu.islandToggleDiff")
+    static let islandActivateCardSelection = Notification.Name("bipuu.islandActivateCardSelection")
+    static let openFullSettings    = Notification.Name("bipuu.openFullSettings")
+    static let hookReveal       = Notification.Name("bipuu.hookReveal")
+    static let musicReveal      = Notification.Name("bipuu.musicReveal")
     // Greeting ↔ IslandWindowController
-    static let greetComplete    = Notification.Name("notchBuddy.greetComplete")
-    static let checkMondayRecap = Notification.Name("notchBuddy.checkMondayRecap")
-    static let greetingHover    = Notification.Name("notchBuddy.greetingHover")
-    static let greetingInterrupt = Notification.Name("notchBuddy.greetingInterrupt")
-    static let openWardrobeFromDesktop = Notification.Name("notchBuddy.openWardrobeFromDesktop")
+    static let greetComplete    = Notification.Name("bipuu.greetComplete")
+    static let checkMondayRecap = Notification.Name("bipuu.checkMondayRecap")
+    static let greetingHover    = Notification.Name("bipuu.greetingHover")
+    static let greetingInterrupt = Notification.Name("bipuu.greetingInterrupt")
+    static let openWardrobeFromDesktop = Notification.Name("bipuu.openWardrobeFromDesktop")
     // Island moved to another screen (resting size may differ: notch vs bar)
-    static let islandScreenChanged = Notification.Name("notchBuddy.islandScreenChanged")
+    static let islandScreenChanged = Notification.Name("bipuu.islandScreenChanged")
 }
 
 // MARK: - islandSize (takes real notch dimensions)

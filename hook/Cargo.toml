@@ -1,12 +1,12 @@
 [package]
-name = "coucou-hook"
-description = "Relays Claude Code hook events to Coucou over a named pipe (Windows) or a Unix socket (Linux)"
+name = "bipuu-hook"
+description = "Relays Claude Code hook events to Bipuu over a named pipe (Windows) or a Unix socket (Linux)"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
 [[bin]]
-name = "coucou-hook"
+name = "bipuu-hook"
 path = "src/main.rs"
 
 [dependencies]

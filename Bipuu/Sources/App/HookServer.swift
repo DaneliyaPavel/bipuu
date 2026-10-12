@@ -5,7 +5,7 @@ import SwiftUI
 import CryptoKit
 
 // MARK: - HookServer
-// Listens on a Unix domain socket for events from nb-hook (Claude Code hooks).
+// Listens on a Unix domain socket for events from bipuu-hook (Claude Code hooks).
 // Thread-safe: socket I/O on background threads, state updates dispatched to main queue.
 
 final class HookServer: @unchecked Sendable {
@@ -14,14 +14,14 @@ final class HookServer: @unchecked Sendable {
     // Support directory paths
     static var supportDir: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("NotchBuddy")
+            .appendingPathComponent("Bipuu")
     }
     static var socketPath: String {
-        return supportDir.appendingPathComponent("nb.sock").path
+        return supportDir.appendingPathComponent("bipuu.sock").path
     }
     // hookScriptPath is only used by the non-App Store build.
     // App Store build derives the command from the panel-selected claudeURL in buildHooksData(claudeURL:).
-    static var hookScriptPath: String { supportDir.appendingPathComponent("nb-hook").path }
+    static var hookScriptPath: String { supportDir.appendingPathComponent("bipuu-hook").path }
 
     // No approval blocking state — notch is notification-only, user answers in VS Code
 
@@ -33,7 +33,7 @@ final class HookServer: @unchecked Sendable {
     private let connectionLock = NSLock()
     private var connectionCount = 0
     /// Permission requests waiting for a click, oldest first; the head is on the card.
-    /// Each one holds its nb-hook connection open until it is answered or dropped.
+    /// Each one holds its bipuu-hook connection open until it is answered or dropped.
     private var approvals = ApprovalQueue()
     /// One read source per queued request: it notices the client hanging up, and its
     /// cancel handler is the only place the request's fd is closed.
@@ -41,9 +41,9 @@ final class HookServer: @unchecked Sendable {
     private var pendingQuestionFD: Int32 = -1         // held open while user answers AskUserQuestion
     private var questionFDSource: (any DispatchSourceRead)? = nil  // monitors pendingQuestionFD
 
-    /// True when a real nb-hook connection is holding the approval fd open.
+    /// True when a real bipuu-hook connection is holding the approval fd open.
     @MainActor var hasRealPendingApproval: Bool { !approvals.isEmpty }
-    /// True when a real nb-hook connection is holding the question fd open.
+    /// True when a real bipuu-hook connection is holding the question fd open.
     @MainActor var hasRealPendingQuestion: Bool { pendingQuestionFD >= 0 }
     private var questionPillId: String = ""           // pill that owns the pending question
     private var questionSessionId: String = ""        // sessionId for the pending question (recap tracking)
@@ -56,7 +56,7 @@ final class HookServer: @unchecked Sendable {
 
     // MARK: - Approval queue helpers
 
-    /// Note shown when a request was answered outside Coucou.
+    /// Note shown when a request was answered outside Bipuu.
     @MainActor
     private func handledNote(pill: String) -> String {
         switch pill {
@@ -107,7 +107,7 @@ final class HookServer: @unchecked Sendable {
     }
 
     /// Takes one request out of the queue. With `answer`, the decision is written to its
-    /// nb-hook first; without, the connection just closes and the agent asks again itself.
+    /// bipuu-hook first; without, the connection just closes and the agent asks again itself.
     /// The cancel handler of its source closes the fd — never close it directly.
     /// The next request in line then takes the card; when none is left the card closes,
     /// with `note` for three seconds if one is given.
@@ -212,7 +212,7 @@ final class HookServer: @unchecked Sendable {
     }
 
     /// Called by QuestionView.onDisappear — card left screen without an explicit answer.
-    /// Sends "ask" immediately to unblock nb-hook; does NOT navigate (view already changed).
+    /// Sends "ask" immediately to unblock bipuu-hook; does NOT navigate (view already changed).
     @MainActor
     func releaseQuestionFD() {
         guard pendingQuestionFD >= 0 else { return }
@@ -349,10 +349,10 @@ final class HookServer: @unchecked Sendable {
             return
         }
 
-        let coucouKind = payload["coucou_kind"] as? String ?? ""
+        let bipuuKind = payload["bipuu_kind"] as? String ?? ""
 
         // statusline payloads are handled separately — no session, no reveal, no sound
-        if coucouKind == "statusline" {
+        if bipuuKind == "statusline" {
             Task { @MainActor in self.processStatusLine(payload: payload) }
             sendLine(fd: fd, text: #"{"ok":true}"#)
             close(fd)
@@ -360,7 +360,7 @@ final class HookServer: @unchecked Sendable {
         }
 
         // AskUserQuestion via --ask PreToolUse hook — hold fd open like PermissionRequest
-        if coucouKind == "ask_user_question" {
+        if bipuuKind == "ask_user_question" {
             let toolInput = payload["tool_input"] as? [String: Any] ?? [:]
             if let parsed = AskQuestion.parse(toolInput: toolInput) {
                 Task { @MainActor in self.processQuestionRequest(fd: fd, parsed: parsed, payload: payload) }
@@ -387,7 +387,7 @@ final class HookServer: @unchecked Sendable {
 
     // MARK: - Event → AppState
     // Claude Code events route to the permanent "integration_claude" task.
-    // Events tagged with a valid coucou_agent route to a dynamic "integration_<agent>" task.
+    // Events tagged with a valid bipuu_agent route to a dynamic "integration_<agent>" task.
     // View switches only happen if VS Code (or the agent pill) is currently focused.
     // When not focused: state updates animate the mini bot in the pill; badge shown for alerts.
 
@@ -399,11 +399,11 @@ final class HookServer: @unchecked Sendable {
                      ?? "unknown"
         let cwd = payload["cwd"] as? String ?? ""
         let rawName = URL(fileURLWithPath: cwd).lastPathComponent
-        let projectName = aliasProjectName(rawName.isEmpty ? "Session" : rawName)
+        let projectName = rawName.isEmpty ? "Session" : rawName
 
         // Determine which pill this event belongs to.
-        // coucou_agent must be lowercase, digits and hyphens, ≤ 24 chars.
-        let rawAgent = payload["coucou_agent"] as? String ?? ""
+        // bipuu_agent must be lowercase, digits and hyphens, ≤ 24 chars.
+        let rawAgent = payload["bipuu_agent"] as? String ?? ""
         let validAgent = Self.validateAgent(rawAgent)
 
         let termProgram = payload["term_program"] as? String ?? ""
@@ -418,7 +418,7 @@ final class HookServer: @unchecked Sendable {
 
         // Routing:
         // • "codex" → agent_codex (GitHub build only: workspace pill, approvals in the notch)
-        // • other valid coucou_agent → external pill (fire-and-forget, no approval card)
+        // • other valid bipuu_agent → external pill (fire-and-forget, no approval card)
         // • Cursor bundle ID → agent_cursor
         // • VS Code → integration_claude
         // • a known terminal (Warp, Terminal, iTerm…) → integration_claude, host recorded on the task
@@ -443,7 +443,7 @@ final class HookServer: @unchecked Sendable {
             isExternalAgent = false
             hostApp = host.bundleId
         } else {
-            nbLog("Ignored \(name) from \(termProgram.isEmpty ? bundleId : termProgram) (\(projectName))")
+            bipuuLog("Ignored \(name) from \(termProgram.isEmpty ? bundleId : termProgram) (\(projectName))")
             return
         }
 
@@ -490,7 +490,7 @@ final class HookServer: @unchecked Sendable {
             upsertTask(pill: agentId, display: display, working: false,
                        externalAgent: isExternalAgent ? validAgent : nil)
             if let idx = state.tasks.firstIndex(where: { $0.id == agentId }) { state.tasks[idx].finalLine = nil }
-            nbLog("SessionStart \(isExternalAgent ? agentId : projectName) (\(sessionId.prefix(8)))")
+            bipuuLog("SessionStart \(isExternalAgent ? agentId : projectName) (\(sessionId.prefix(8)))")
             NotificationCenter.default.post(name: .checkMondayRecap, object: nil)
             if state.isPresent { expandIfNeeded(to: .overview) }
             if agentId == "agent_hermes", let platform = payload["platform"] as? String,
@@ -524,7 +524,7 @@ final class HookServer: @unchecked Sendable {
             let input = payload["tool_input"] as? [String: Any] ?? [:]
             let step = localizedStep(tool: tool, input: input)
             appendStep(id: agentId, step: step)
-            nbLog("PreToolUse \(tool)")
+            bipuuLog("PreToolUse \(tool)")
 
         case "PostToolUse":
             sessions.note(pill: agentId, display: display, working: true)
@@ -564,7 +564,7 @@ final class HookServer: @unchecked Sendable {
             // Another session is still mid-turn behind this pill: the finished state, the
             // sound and the idle reset below would land on its work. Its own Stop comes later.
             guard scope == .pill else {
-                nbLog("Stop \(sessionId.prefix(8)) — \(sessions.workingCount(pill: agentId)) session(s) still working on \(agentId)")
+                bipuuLog("Stop \(sessionId.prefix(8)) — \(sessions.workingCount(pill: agentId)) session(s) still working on \(agentId)")
                 break
             }
             state.updateTask(id: agentId, state: .finished)
@@ -606,7 +606,7 @@ final class HookServer: @unchecked Sendable {
         case "SessionEnd":
             // Only the last session behind the pill may take the card and its diffs down.
             guard sessions.endSession(pill: agentId, session: sessionId) == .pill else {
-                nbLog("SessionEnd \(sessionId.prefix(8)) — \(sessions.liveCount(pill: agentId)) session(s) left on \(agentId)")
+                bipuuLog("SessionEnd \(sessionId.prefix(8)) — \(sessions.liveCount(pill: agentId)) session(s) left on \(agentId)")
                 applyDisplayOwner(pill: agentId)
                 break
             }
@@ -628,7 +628,7 @@ final class HookServer: @unchecked Sendable {
 
     // MARK: - Agent validation + dynamic pill
 
-    /// Validates a coucou_agent name: lowercase, digits and hyphens, 1–24 chars.
+    /// Validates a bipuu_agent name: lowercase, digits and hyphens, 1–24 chars.
     /// "claude" is reserved and rejected so it cannot impersonate the Claude Code pill.
     /// Returns the name unchanged if valid, nil otherwise.
     private static func validateAgent(_ raw: String) -> String? {
@@ -690,7 +690,7 @@ final class HookServer: @unchecked Sendable {
             // Non-alert work events: reveal compact only, never force-expand
             NotificationCenter.default.post(name: .hookReveal, object: nil)
         }
-        // Already compact and non-alert: Mochi state update is enough, no expand
+        // Already compact and non-alert: the avatar state update is enough, no expand
     }
 
     // MARK: - Status line (plan gauge)
@@ -716,9 +716,9 @@ final class HookServer: @unchecked Sendable {
                      ?? "unknown"
         let cwd       = payload["cwd"]        as? String ?? ""
         let rawName   = URL(fileURLWithPath: cwd).lastPathComponent
-        let projectName = aliasProjectName(rawName.isEmpty ? "Session" : rawName)
+        let projectName = rawName.isEmpty ? "Session" : rawName
 
-        let rawAgent = payload["coucou_agent"] as? String ?? ""
+        let rawAgent = payload["bipuu_agent"] as? String ?? ""
         let termProgram = payload["term_program"] as? String ?? ""
         let bundleId    = payload["bundle_id"]    as? String ?? ""
         let isCursorEditor = bundleId.lowercased() == "com.todesktop.230313mzl4w4u92"
@@ -727,17 +727,17 @@ final class HookServer: @unchecked Sendable {
             bundleId.lowercased().contains("vscode"))
 
         // Codex, Copilot CLI and Muse Code get the same approval card as Claude Code / Cursor.
-        // Other external agents (any other coucou_agent) answer immediately with "ask"
+        // Other external agents (any other bipuu_agent) answer immediately with "ask"
         // so the agent re-asks in its own terminal — they do not get a notch card.
         let isCodexRequest   = rawAgent == "codex"
         let isCopilotRequest = rawAgent == "copilot"
         let isMuseRequest    = rawAgent == "muse"
-        // isHermesRequest is true only when the plugin sent coucou_has_transport: true,
+        // isHermesRequest is true only when the plugin sent bipuu_has_transport: true,
         // meaning register_approval_transport is wired and Hermes will honour our choice.
         // Without that flag the request falls through to "ask" so Hermes handles it natively.
         let isHermesRequest  = rawAgent == "hermes"
             && UserDefaults.standard.bool(forKey: "hermesApprovalsEnabled")
-            && (payload["coucou_has_transport"] as? Bool == true)
+            && (payload["bipuu_has_transport"] as? Bool == true)
         if !isCodexRequest && !isCopilotRequest && !isMuseRequest && !isHermesRequest && Self.validateAgent(rawAgent) != nil {
             Task.detached { [weak self] in
                 self?.sendLine(fd: fd, text: #"{"permissionDecision":"ask"}"#)
@@ -776,7 +776,7 @@ final class HookServer: @unchecked Sendable {
         let tool = payload["tool_name"] as? String ?? "Tool"
         let toolInput = payload["tool_input"] as? [String: Any] ?? [:]
         let inputKey = Self.approvalInputKey(toolInput)
-        nbLog("PermissionRequest \(tool) [\(pillId)]")
+        bipuuLog("PermissionRequest \(tool) [\(pillId)]")
 
         // AskUserQuestion is now handled via the dedicated --ask PreToolUse hook.
         // If it still arrives here as a PermissionRequest, reply "ask" so Claude Code
@@ -798,7 +798,7 @@ final class HookServer: @unchecked Sendable {
                                    command: command, inputKey: inputKey,
                                    hostApp: terminalHost?.bundleId, bundleId: bundleId)
         guard approvals.enqueue(entry) == .accepted else {
-            nbLog("PermissionRequest \(tool): \(ApprovalQueue.maxPending) already waiting, asked in the terminal")
+            bipuuLog("PermissionRequest \(tool): \(ApprovalQueue.maxPending) already waiting, asked in the terminal")
             Task.detached { [weak self] in
                 self?.sendLine(fd: fd, text: #"{"permissionDecision":"ask"}"#)
                 close(fd)
@@ -827,7 +827,7 @@ final class HookServer: @unchecked Sendable {
         source.resume()
         approvalSources[entryId] = source
 
-        // Safety timeout — drop without a decision. nb-hook reads EOF from the cancel
+        // Safety timeout — drop without a decision. bipuu-hook reads EOF from the cancel
         // handler's close and exits; the agent asks again itself.
         // Copilot/Muse use 110s (their relay waits 118s but their hook timeout is 120s, leaving little margin).
         let waitTimeout: Double = (isCopilotRequest || isMuseRequest) ? 110 : 115
@@ -840,7 +840,7 @@ final class HookServer: @unchecked Sendable {
     }
 
     /// Called by ApprovalView buttons and the iPhone. Writes the decision to the waiting
-    /// nb-hook of request `id` — the one that was on screen. A click that lands after the
+    /// bipuu-hook of request `id` — the one that was on screen. A click that lands after the
     /// card moved on to another request is ignored, so it can never answer the wrong one.
     @MainActor
     func sendApprovalDecision(_ decision: String, for id: UUID? = nil) {
@@ -853,7 +853,7 @@ final class HookServer: @unchecked Sendable {
             return
         }
         if let id, id != head.id {
-            nbLog("Approval decision for a request no longer on the card, ignored")
+            bipuuLog("Approval decision for a request no longer on the card, ignored")
             return
         }
 
@@ -877,9 +877,9 @@ final class HookServer: @unchecked Sendable {
                      ?? "unknown"
         let cwd       = payload["cwd"]        as? String ?? ""
         let rawName   = URL(fileURLWithPath: cwd).lastPathComponent
-        let projectName = aliasProjectName(rawName.isEmpty ? "Session" : rawName)
+        let projectName = rawName.isEmpty ? "Session" : rawName
 
-        let rawAgent    = payload["coucou_agent"] as? String ?? ""
+        let rawAgent    = payload["bipuu_agent"] as? String ?? ""
         let termProgram = payload["term_program"]  as? String ?? ""
         let bundleId    = payload["bundle_id"]     as? String ?? ""
         let isCursorEditor = bundleId.lowercased() == "com.todesktop.230313mzl4w4u92"
@@ -949,7 +949,7 @@ final class HookServer: @unchecked Sendable {
         let captured = fd
         DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
             guard let self, self.pendingQuestionFD == captured else { return }
-            // Send "ask" so nb-hook exits cleanly; Claude Code re-asks in terminal.
+            // Send "ask" so bipuu-hook exits cleanly; Claude Code re-asks in terminal.
             let askFD = self.pendingQuestionFD
             self.pendingQuestionFD = -1
             let src = self.questionFDSource
@@ -969,7 +969,7 @@ final class HookServer: @unchecked Sendable {
     }
 
     /// Records the session an event came from, then refreshes its card.
-    /// `externalAgent` is the validated `coucou_agent` name for a third-party agent pill,
+    /// `externalAgent` is the validated `bipuu_agent` name for a third-party agent pill,
     /// nil for a workspace pill.
     @MainActor
     private func upsertTask(pill: String, display: PillSessionRegistry.Display,
@@ -1055,17 +1055,6 @@ final class HookServer: @unchecked Sendable {
         state.tasks[idx].steps.append(step)
         if state.tasks[idx].steps.count > 20 { state.tasks[idx].steps.removeFirst() }
         state.tasks[idx].stepIndex = state.tasks[idx].steps.count - 1
-    }
-
-    // MARK: - Project name alias mapping
-
-    private func aliasProjectName(_ name: String) -> String {
-        let aliases: [String: String] = [
-            "notch-buddy":  "Notch Buddy",
-            "notchbuddy":   "Notch Buddy",
-            "notch_buddy":  "Notch Buddy",
-        ]
-        return aliases[name.lowercased()] ?? name
     }
 
     // MARK: - Localized step labels
@@ -1192,8 +1181,8 @@ final class HookServer: @unchecked Sendable {
 
     // MARK: - Logging
 
-    private func nbLog(_ message: String) {
-        appendAppLog("nb.log", message)
+    private func bipuuLog(_ message: String) {
+        appendAppLog("bipuu.log", message)
     }
 
     private func sendLine(fd: Int32, text: String) {
@@ -1208,25 +1197,25 @@ final class HookServer: @unchecked Sendable {
         }
     }
 
-    // MARK: - nb-hook script installation
+    // MARK: - bipuu-hook script installation
 
     func installHookScript() {
         let dir = Self.supportDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? FileManager.default.setAttributes([.posixPermissions: 0o700 as NSNumber], ofItemAtPath: dir.path)
-        // nb-hook: shell wrapper (always exits 0, calls nb-hook.py via python3)
+        // bipuu-hook: shell wrapper (always exits 0, calls bipuu-hook.py via python3)
         let wrapperURL = URL(fileURLWithPath: Self.hookScriptPath)
-        try? nbHookShellWrapper.write(to: wrapperURL, atomically: true, encoding: .utf8)
+        try? bipuuHookShellWrapper.write(to: wrapperURL, atomically: true, encoding: .utf8)
         _ = try? FileManager.default.setAttributes([.posixPermissions: 0o755 as NSNumber], ofItemAtPath: wrapperURL.path)
-        // nb-hook.py: Python relay
-        let pyURL = wrapperURL.deletingLastPathComponent().appendingPathComponent("nb-hook.py")
-        try? nbHookPythonGitHub.write(to: pyURL, atomically: true, encoding: .utf8)
+        // bipuu-hook.py: Python relay
+        let pyURL = wrapperURL.deletingLastPathComponent().appendingPathComponent("bipuu-hook.py")
+        try? bipuuHookPythonGitHub.write(to: pyURL, atomically: true, encoding: .utf8)
         _ = try? FileManager.default.setAttributes([.posixPermissions: 0o755 as NSNumber], ofItemAtPath: pyURL.path)
     }
 
     // MARK: - Outdated hook detection
 
-    /// Returns true if settings.json has a Coucou hook that needs updating:
+    /// Returns true if settings.json has a Bipuu hook that needs updating:
     /// either a PermissionRequest hook with timeout < 120s, or the AskUserQuestion
     /// PreToolUse matcher is missing (requires Claude Code 2.1.85+).
     static func hooksNeedUpdate() -> Bool {
@@ -1237,16 +1226,16 @@ final class HookServer: @unchecked Sendable {
               let hooks = settings["hooks"] as? [String: Any] else {
             return false
         }
-        // Track whether any Coucou hook is installed at all
-        var hasCoucouHooks = false
+        // Track whether any Bipuu hook is installed at all
+        var hasBipuuHooks = false
 
         if let permReqHooks = hooks["PermissionRequest"] as? [[String: Any]] {
             for matcher in permReqHooks {
                 if let hookList = matcher["hooks"] as? [[String: Any]] {
                     for hook in hookList {
                         if let cmd = hook["command"] as? String,
-                           cmd.contains("NotchBuddy") || cmd.contains("coucou") {
-                            hasCoucouHooks = true
+                           cmd.contains("Bipuu") || cmd.contains("bipuu") {
+                            hasBipuuHooks = true
                             if let timeout = hook["timeout"] as? Int, timeout < 120 { return true }
                         }
                     }
@@ -1255,13 +1244,13 @@ final class HookServer: @unchecked Sendable {
         }
 
         // Check that the AskUserQuestion PreToolUse entry exists
-        if hasCoucouHooks {
+        if hasBipuuHooks {
             let preToolHooks = hooks["PreToolUse"] as? [[String: Any]] ?? []
             let hasAskEntry = preToolHooks.contains { m in
                 (m["matcher"] as? String) == "AskUserQuestion"
                 && (m["hooks"] as? [[String: Any]])?.contains {
                     let cmd = $0["command"] as? String ?? ""
-                    return cmd.contains("NotchBuddy") || cmd.contains("coucou")
+                    return cmd.contains("Bipuu") || cmd.contains("bipuu")
                 } ?? false
             }
             if !hasAskEntry { return true }
@@ -1315,7 +1304,7 @@ final class HookServer: @unchecked Sendable {
         var hooks = try ClaudeSettingsFile.hooks(in: settings, name: "settings.json")
         for (event, timeout) in events {
             var existing = try ClaudeSettingsFile.hookGroups(in: hooks, event: event, name: "settings.json")
-            existing.removeAll { ($0["hooks"] as? [[String: Any]])?.contains { ($0["command"] as? String)?.contains("NotchBuddy") == true || ($0["command"] as? String)?.contains("coucou") == true } ?? false }
+            existing.removeAll { ($0["hooks"] as? [[String: Any]])?.contains { ($0["command"] as? String)?.contains("Bipuu") == true || ($0["command"] as? String)?.contains("bipuu") == true } ?? false }
             existing.append(["hooks": [["type": "command", "command": quotedCmd, "timeout": timeout]]])
             hooks[event] = existing
         }
@@ -1342,8 +1331,8 @@ final class HookServer: @unchecked Sendable {
             if var matchers = hooks[key] as? [[String: Any]] {
                 matchers.removeAll { matcher in
                     (matcher["hooks"] as? [[String: Any]])?.contains {
-                        ($0["command"] as? String)?.contains("NotchBuddy") == true ||
-                        ($0["command"] as? String)?.contains("coucou") == true
+                        ($0["command"] as? String)?.contains("Bipuu") == true ||
+                        ($0["command"] as? String)?.contains("bipuu") == true
                     } ?? false
                 }
                 if matchers.isEmpty { hooks.removeValue(forKey: key) }
@@ -1369,7 +1358,7 @@ final class HookServer: @unchecked Sendable {
               let settings = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let sl = settings["statusLine"] as? [String: Any],
               let cmd = sl["command"] as? String else { return false }
-        return cmd.contains("nb-hook")
+        return cmd.contains("bipuu-hook")
     }
 
     private var _pendingStatusLineData: Data?
@@ -1406,13 +1395,13 @@ final class HookServer: @unchecked Sendable {
             try? clCheck.run()
             clCheck.waitUntilExit()
             if clCheck.terminationStatus != 0 {
-                throw NSError(domain: "Coucou", code: 1,
+                throw NSError(domain: "Bipuu", code: 1,
                               userInfo: [NSLocalizedDescriptionKey:
                                   "Command Line Tools are required but not installed. Run: xcode-select --install"])
             }
 
             if let existing = oldSL,
-               let cmd = existing["command"] as? String, !cmd.contains("nb-hook") {
+               let cmd = existing["command"] as? String, !cmd.contains("bipuu-hook") {
                 // Keep existing object but swap command; save old for later restoration
                 var updated = existing
                 updated["command"] = quotedCmd
@@ -1420,7 +1409,7 @@ final class HookServer: @unchecked Sendable {
                 _pendingPreviousData = try? JSONSerialization.data(withJSONObject: existing,
                                                                    options: [.prettyPrinted, .sortedKeys])
             } else if let existing = oldSL,
-                      let cmd = existing["command"] as? String, cmd.contains("nb-hook") {
+                      let cmd = existing["command"] as? String, cmd.contains("bipuu-hook") {
                 // Already installed — rebuild to update path if needed, keep other fields
                 var updated = existing
                 updated["command"] = quotedCmd
@@ -1430,7 +1419,7 @@ final class HookServer: @unchecked Sendable {
             }
         } else {
             // Uninstall: only if it's ours
-            if let cur = oldSL, let cmd = cur["command"] as? String, cmd.contains("nb-hook") {
+            if let cur = oldSL, let cmd = cur["command"] as? String, cmd.contains("bipuu-hook") {
                 if let prevData = try? Data(contentsOf: statusLinePreviousURL),
                    let prevObj = (try? JSONSerialization.jsonObject(with: prevData)) as? [String: Any] {
                     newSL = prevObj
@@ -1490,7 +1479,7 @@ final class HookServer: @unchecked Sendable {
 
     // MARK: - Claude Code installed-state detection (both builds)
 
-    /// True when ~/.claude/settings.json already routes Claude Code events to Coucou.
+    /// True when ~/.claude/settings.json already routes Claude Code events to Bipuu.
     /// Cursor sessions ride on these same hooks, so they share this state.
     static func claudeHooksInstalled() -> Bool {
         let url = FileManager.default.homeDirectoryForCurrentUser
@@ -1498,7 +1487,7 @@ final class HookServer: @unchecked Sendable {
         guard let data = try? Data(contentsOf: url),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return false }
-        return coucouHooksPresent(inSettings: json)
+        return bipuuHooksPresent(inSettings: json)
     }
 
     // MARK: - Gemini CLI and Antigravity hook installers  (#if !APPSTORE only)
@@ -1522,12 +1511,12 @@ final class HookServer: @unchecked Sendable {
                 if let innerHooks = group["hooks"] as? [[String: Any]] {
                     for hook in innerHooks {
                         if let cmd = hook["command"] as? String,
-                           cmd.contains("nb-hook"), cmd.contains("--agent gemini") { return true }
+                           cmd.contains("bipuu-hook"), cmd.contains("--agent gemini") { return true }
                     }
                 }
                 // Legacy flat entry
                 if let cmd = group["command"] as? String,
-                   cmd.contains("nb-hook"), cmd.contains("--agent gemini") { return true }
+                   cmd.contains("bipuu-hook"), cmd.contains("--agent gemini") { return true }
             }
         }
         return false
@@ -1536,10 +1525,10 @@ final class HookServer: @unchecked Sendable {
     static func agyHooksInstalled() -> Bool {
         guard let data = try? Data(contentsOf: agyHooksURL),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let coucou = root["coucou"] else { return false }
-        let json = (try? JSONSerialization.data(withJSONObject: coucou))
+              let bipuu = root["bipuu"] else { return false }
+        let json = (try? JSONSerialization.data(withJSONObject: bipuu))
             .flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        return json.contains("nb-hook")
+        return json.contains("bipuu-hook")
     }
 
     // MARK: Gemini CLI – preview / write
@@ -1551,7 +1540,7 @@ final class HookServer: @unchecked Sendable {
         let url = Self.geminiSettingsURL
         let exists = FileManager.default.fileExists(atPath: url.path)
         if !install && !exists {
-            throw NSError(domain: "CoucouNoop", code: 0, userInfo: [
+            throw NSError(domain: "BipuuNoop", code: 0, userInfo: [
                 NSLocalizedDescriptionKey: "No Gemini CLI hooks to remove."
             ])
         }
@@ -1567,7 +1556,7 @@ final class HookServer: @unchecked Sendable {
         let url = Self.geminiSettingsURL
         let current = (try? Data(contentsOf: url)) ?? Data()
         guard sha256Hex(current) == fp else {
-            throw NSError(domain: "Coucou", code: 1, userInfo: [
+            throw NSError(domain: "Bipuu", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "~/.gemini/settings.json changed since preview. Refresh and try again."
             ])
         }
@@ -1580,8 +1569,8 @@ final class HookServer: @unchecked Sendable {
         var settings = try Self.strictReadJSONObject(at: Self.geminiSettingsURL,
                                                      label: "~/.gemini/settings.json")
         if let raw = settings["hooks"], !(raw is [String: Any]) {
-            throw NSError(domain: "Coucou", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "~/.gemini/settings.json: \"hooks\" has an unexpected type — Coucou has not touched it."
+            throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "~/.gemini/settings.json: \"hooks\" has an unexpected type — Bipuu has not touched it."
             ])
         }
         let base = hookBase()
@@ -1597,12 +1586,12 @@ final class HookServer: @unchecked Sendable {
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         for (geminiEvent, normalizedEvent, timeout) in events {
             if let raw = hooks[geminiEvent], !(raw is [[String: Any]]) {
-                throw NSError(domain: "Coucou", code: 2, userInfo: [
-                    NSLocalizedDescriptionKey: "~/.gemini/settings.json: \"hooks\"[\"\(geminiEvent)\"] has an unexpected type — Coucou has not touched it."
+                throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "~/.gemini/settings.json: \"hooks\"[\"\(geminiEvent)\"] has an unexpected type — Bipuu has not touched it."
                 ])
             }
             var groups = hooks[geminiEvent] as? [[String: Any]] ?? []
-            // Remove legacy flat entries and groups whose inner hooks contain nb-hook
+            // Remove legacy flat entries and groups whose inner hooks contain bipuu-hook
             groups = removeNbHookEntries(from: groups)
             let hookEntry: [String: Any] = [
                 "type": "command",
@@ -1621,8 +1610,8 @@ final class HookServer: @unchecked Sendable {
         var settings = try Self.strictReadJSONObject(at: Self.geminiSettingsURL,
                                                      label: "~/.gemini/settings.json")
         if let raw = settings["hooks"], !(raw is [String: Any]) {
-            throw NSError(domain: "Coucou", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "~/.gemini/settings.json: \"hooks\" has an unexpected type — Coucou has not touched it."
+            throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "~/.gemini/settings.json: \"hooks\" has an unexpected type — Bipuu has not touched it."
             ])
         }
         if var hooks = settings["hooks"] as? [String: Any] {
@@ -1647,7 +1636,7 @@ final class HookServer: @unchecked Sendable {
         let url = Self.agyHooksURL
         let exists = FileManager.default.fileExists(atPath: url.path)
         if !install && !exists {
-            throw NSError(domain: "CoucouNoop", code: 0, userInfo: [
+            throw NSError(domain: "BipuuNoop", code: 0, userInfo: [
                 NSLocalizedDescriptionKey: "No Antigravity hooks to remove."
             ])
         }
@@ -1663,7 +1652,7 @@ final class HookServer: @unchecked Sendable {
         let url = Self.agyHooksURL
         let current = (try? Data(contentsOf: url)) ?? Data()
         guard sha256Hex(current) == fp else {
-            throw NSError(domain: "Coucou", code: 1, userInfo: [
+            throw NSError(domain: "Bipuu", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "~/.gemini/config/hooks.json changed since preview. Refresh and try again."
             ])
         }
@@ -1678,20 +1667,20 @@ final class HookServer: @unchecked Sendable {
         let base = hookBase()
         // PreToolUse / PostToolUse: tool-level hooks — use matcher group
         // PreInvocation / PostInvocation / Stop: lifecycle hooks — direct handler, no matcher
-        var coucou: [String: Any] = [:]
+        var bipuu: [String: Any] = [:]
         for event in ["PreToolUse", "PostToolUse"] {
             let hook: [String: Any] = ["type": "command",
                                        "command": "\(base) --agent antigravity \(event)",
                                        "timeout": 10]
-            coucou[event] = [["matcher": "*", "hooks": [hook]]]
+            bipuu[event] = [["matcher": "*", "hooks": [hook]]]
         }
         for event in ["PreInvocation", "PostInvocation", "Stop"] {
             let hook: [String: Any] = ["type": "command",
                                        "command": "\(base) --agent antigravity \(event)",
                                        "timeout": 10]
-            coucou[event] = [hook]
+            bipuu[event] = [hook]
         }
-        root["coucou"] = coucou
+        root["bipuu"] = bipuu
         return try JSONSerialization.data(withJSONObject: root,
                                          options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
     }
@@ -1699,7 +1688,7 @@ final class HookServer: @unchecked Sendable {
     private func withoutAgyHooks() throws -> Data {
         var root = try Self.strictReadJSONObject(at: Self.agyHooksURL,
                                                  label: "~/.gemini/config/hooks.json")
-        root.removeValue(forKey: "coucou")
+        root.removeValue(forKey: "bipuu")
         return try JSONSerialization.data(withJSONObject: root,
                                          options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
     }
@@ -1719,13 +1708,13 @@ final class HookServer: @unchecked Sendable {
         let data: Data
         do { data = try Data(contentsOf: url) }
         catch {
-            throw NSError(domain: "Coucou", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "\(label) cannot be read — Coucou has not touched it."
+            throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "\(label) cannot be read — Bipuu has not touched it."
             ])
         }
         guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            throw NSError(domain: "Coucou", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "\(label) is not valid JSON — Coucou has not touched it."
+            throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "\(label) is not valid JSON — Bipuu has not touched it."
             ])
         }
         return obj
@@ -1742,7 +1731,7 @@ final class HookServer: @unchecked Sendable {
                 .appendingPathComponent("\(suffix).bak-\(fmt.string(from: Date()))")
             do { try fm.copyItem(at: url, to: backupURL) }
             catch {
-                throw NSError(domain: "Coucou", code: 3, userInfo: [
+                throw NSError(domain: "Bipuu", code: 3, userInfo: [
                     NSLocalizedDescriptionKey: "Could not back up \(url.lastPathComponent): \(error.localizedDescription)"
                 ])
             }
@@ -1751,16 +1740,16 @@ final class HookServer: @unchecked Sendable {
         try data.write(to: url, options: .atomic)
     }
 
-    /// Removes entries containing "nb-hook" from a Gemini-format groups array.
+    /// Removes entries containing "bipuu-hook" from a Gemini-format groups array.
     /// Handles both new group format (matcher + hooks[]) and legacy flat format (command at top level).
     /// Returns the cleaned array; empty groups (after inner-hook removal) are dropped.
     private func removeNbHookEntries(from groups: [[String: Any]]) -> [[String: Any]] {
         groups.compactMap { group -> [String: Any]? in
             // Legacy flat entry — command at group level
-            if let cmd = group["command"] as? String, cmd.contains("nb-hook") { return nil }
+            if let cmd = group["command"] as? String, cmd.contains("bipuu-hook") { return nil }
             // Group format — filter inner hooks
             if var innerHooks = group["hooks"] as? [[String: Any]] {
-                innerHooks.removeAll { ($0["command"] as? String)?.contains("nb-hook") == true }
+                innerHooks.removeAll { ($0["command"] as? String)?.contains("bipuu-hook") == true }
                 if innerHooks.isEmpty { return nil }
                 var updated = group
                 updated["hooks"] = innerHooks
@@ -1776,7 +1765,7 @@ final class HookServer: @unchecked Sendable {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/hooks.json")
     }
 
-    /// True when ~/.codex/hooks.json already routes Codex events to Coucou's nb-hook.
+    /// True when ~/.codex/hooks.json already routes Codex events to Bipuu's bipuu-hook.
     static func codexHooksInstalled() -> Bool {
         guard let data = try? Data(contentsOf: codexHooksURL),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -1787,7 +1776,7 @@ final class HookServer: @unchecked Sendable {
                 if let innerHooks = group["hooks"] as? [[String: Any]] {
                     for hook in innerHooks {
                         if let cmd = hook["command"] as? String,
-                           cmd.contains("nb-hook"), cmd.contains("--agent codex") { return true }
+                           cmd.contains("bipuu-hook"), cmd.contains("--agent codex") { return true }
                     }
                 }
             }
@@ -1802,7 +1791,7 @@ final class HookServer: @unchecked Sendable {
         let url = Self.codexHooksURL
         let exists = FileManager.default.fileExists(atPath: url.path)
         if !install && !exists {
-            throw NSError(domain: "CoucouNoop", code: 0, userInfo: [
+            throw NSError(domain: "BipuuNoop", code: 0, userInfo: [
                 NSLocalizedDescriptionKey: "No Codex hooks to remove."
             ])
         }
@@ -1818,7 +1807,7 @@ final class HookServer: @unchecked Sendable {
         let url = Self.codexHooksURL
         let current = (try? Data(contentsOf: url)) ?? Data()
         guard sha256Hex(current) == fp else {
-            throw NSError(domain: "Coucou", code: 1, userInfo: [
+            throw NSError(domain: "Bipuu", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "~/.codex/hooks.json changed since preview. Refresh and try again."
             ])
         }
@@ -1830,8 +1819,8 @@ final class HookServer: @unchecked Sendable {
     private func buildCodexHooksData() throws -> Data {
         var root = try Self.strictReadJSONObject(at: Self.codexHooksURL, label: "~/.codex/hooks.json")
         if let raw = root["hooks"], !(raw is [String: Any]) {
-            throw NSError(domain: "Coucou", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "~/.codex/hooks.json: \"hooks\" has an unexpected type — Coucou has not touched it."
+            throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "~/.codex/hooks.json: \"hooks\" has an unexpected type — Bipuu has not touched it."
             ])
         }
         let base = hookBase()
@@ -1841,7 +1830,7 @@ final class HookServer: @unchecked Sendable {
             ("SessionStart",    10,  nil),
             ("UserPromptSubmit", 10, nil),
             ("PreToolUse",      10,  nil),
-            ("PermissionRequest", 120, "Waiting for your answer in the notch (Coucou)"),
+            ("PermissionRequest", 120, "Waiting for your answer in the notch (Bipuu)"),
             ("PostToolUse",     10,  nil),
             ("Stop",            10,  nil),
             ("SubagentStart",   10,  nil),
@@ -1852,12 +1841,12 @@ final class HookServer: @unchecked Sendable {
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         for (event, timeout, statusMsg) in events {
             if let raw = hooks[event], !(raw is [[String: Any]]) {
-                throw NSError(domain: "Coucou", code: 2, userInfo: [
-                    NSLocalizedDescriptionKey: "~/.codex/hooks.json: \"hooks\"[\"\(event)\"] has an unexpected type — Coucou has not touched it."
+                throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "~/.codex/hooks.json: \"hooks\"[\"\(event)\"] has an unexpected type — Bipuu has not touched it."
                 ])
             }
             var groups = hooks[event] as? [[String: Any]] ?? []
-            // Remove existing Coucou entries
+            // Remove existing Bipuu entries
             groups = removeNbHookEntries(from: groups)
             var hookEntry: [String: Any] = [
                 "type": "command",
@@ -1876,8 +1865,8 @@ final class HookServer: @unchecked Sendable {
     private func withoutCodexHooks() throws -> Data {
         var root = try Self.strictReadJSONObject(at: Self.codexHooksURL, label: "~/.codex/hooks.json")
         if let raw = root["hooks"], !(raw is [String: Any]) {
-            throw NSError(domain: "Coucou", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "~/.codex/hooks.json: \"hooks\" has an unexpected type — Coucou has not touched it."
+            throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "~/.codex/hooks.json: \"hooks\" has an unexpected type — Bipuu has not touched it."
             ])
         }
         if var hooks = root["hooks"] as? [String: Any] {
@@ -1897,10 +1886,10 @@ final class HookServer: @unchecked Sendable {
 
     static var copilotHooksURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".copilot/hooks/coucou.json")
+            .appendingPathComponent(".copilot/hooks/bipuu.json")
     }
 
-    /// True when ~/.copilot/hooks/coucou.json already routes Copilot events to Coucou's nb-hook.
+    /// True when ~/.copilot/hooks/bipuu.json already routes Copilot events to Bipuu's bipuu-hook.
     static func copilotHooksInstalled() -> Bool {
         guard let data = try? Data(contentsOf: copilotHooksURL),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -1909,7 +1898,7 @@ final class HookServer: @unchecked Sendable {
             guard let entries = value as? [[String: Any]] else { continue }
             for entry in entries {
                 if let cmd = entry["bash"] as? String,
-                   cmd.contains("nb-hook"), cmd.contains("--agent copilot") { return true }
+                   cmd.contains("bipuu-hook"), cmd.contains("--agent copilot") { return true }
             }
         }
         return false
@@ -1922,7 +1911,7 @@ final class HookServer: @unchecked Sendable {
         let url = Self.copilotHooksURL
         let exists = FileManager.default.fileExists(atPath: url.path)
         if !install && !exists {
-            throw NSError(domain: "CoucouNoop", code: 0, userInfo: [
+            throw NSError(domain: "BipuuNoop", code: 0, userInfo: [
                 NSLocalizedDescriptionKey: "No Copilot hooks to remove."
             ])
         }
@@ -1943,12 +1932,12 @@ final class HookServer: @unchecked Sendable {
         let url = Self.copilotHooksURL
         let current = (try? Data(contentsOf: url)) ?? Data()
         guard sha256Hex(current) == fp else {
-            throw NSError(domain: "Coucou", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "~/.copilot/hooks/coucou.json changed since preview. Refresh and try again."
+            throw NSError(domain: "Bipuu", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "~/.copilot/hooks/bipuu.json changed since preview. Refresh and try again."
             ])
         }
         if let data = _pendingCopilotData {
-            try writeJSONFile(data, to: url, suffix: "coucou.json")
+            try writeJSONFile(data, to: url, suffix: "bipuu.json")
         } else {
             // Uninstall: delete the file entirely
             try FileManager.default.removeItem(at: url)
@@ -1959,10 +1948,10 @@ final class HookServer: @unchecked Sendable {
 
     private func buildCopilotHooksData() throws -> Data {
         var root = try Self.strictReadJSONObject(at: Self.copilotHooksURL,
-                                                  label: "~/.copilot/hooks/coucou.json")
+                                                  label: "~/.copilot/hooks/bipuu.json")
         if let raw = root["hooks"], !(raw is [String: Any]) {
-            throw NSError(domain: "Coucou", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "~/.copilot/hooks/coucou.json: \"hooks\" has an unexpected type — Coucou has not touched it."
+            throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "~/.copilot/hooks/bipuu.json: \"hooks\" has an unexpected type — Bipuu has not touched it."
             ])
         }
         let base = hookBase()
@@ -1982,12 +1971,12 @@ final class HookServer: @unchecked Sendable {
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         for (event, timeout) in events {
             if let raw = hooks[event], !(raw is [[String: Any]]) {
-                throw NSError(domain: "Coucou", code: 2, userInfo: [
-                    NSLocalizedDescriptionKey: "~/.copilot/hooks/coucou.json: \"hooks\"[\"\(event)\"] has an unexpected type — Coucou has not touched it."
+                throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "~/.copilot/hooks/bipuu.json: \"hooks\"[\"\(event)\"] has an unexpected type — Bipuu has not touched it."
                 ])
             }
             var entries = hooks[event] as? [[String: Any]] ?? []
-            entries.removeAll { ($0["bash"] as? String)?.contains("nb-hook") == true }
+            entries.removeAll { ($0["bash"] as? String)?.contains("bipuu-hook") == true }
             entries.append(["type": "command", "bash": "\(base) --agent copilot \(event)", "timeoutSec": timeout])
             hooks[event] = entries
         }
@@ -1999,11 +1988,11 @@ final class HookServer: @unchecked Sendable {
 
     private func withoutCopilotHooks() throws -> Data {
         var root = try Self.strictReadJSONObject(at: Self.copilotHooksURL,
-                                                  label: "~/.copilot/hooks/coucou.json")
+                                                  label: "~/.copilot/hooks/bipuu.json")
         if var hooks = root["hooks"] as? [String: Any] {
             for key in hooks.keys {
                 if var entries = hooks[key] as? [[String: Any]] {
-                    entries.removeAll { ($0["command"] as? String)?.contains("nb-hook") == true }
+                    entries.removeAll { ($0["command"] as? String)?.contains("bipuu-hook") == true }
                     if entries.isEmpty { hooks.removeValue(forKey: key) } else { hooks[key] = entries }
                 }
             }
@@ -2020,7 +2009,7 @@ final class HookServer: @unchecked Sendable {
             .appendingPathComponent(".config/muse/settings.json")
     }
 
-    /// True when ~/.config/muse/settings.json already routes Muse events to Coucou's nb-hook.
+    /// True when ~/.config/muse/settings.json already routes Muse events to Bipuu's bipuu-hook.
     static func museHooksInstalled() -> Bool {
         guard let data = try? Data(contentsOf: museSettingsURL),
               let settings = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -2031,11 +2020,11 @@ final class HookServer: @unchecked Sendable {
                 if let innerHooks = group["hooks"] as? [[String: Any]] {
                     for h in innerHooks {
                         if let cmd = h["command"] as? String,
-                           cmd.contains("nb-hook"), cmd.contains("--agent muse") { return true }
+                           cmd.contains("bipuu-hook"), cmd.contains("--agent muse") { return true }
                     }
                 }
                 if let cmd = group["command"] as? String,
-                   cmd.contains("nb-hook"), cmd.contains("--agent muse") { return true }
+                   cmd.contains("bipuu-hook"), cmd.contains("--agent muse") { return true }
             }
         }
         return false
@@ -2048,7 +2037,7 @@ final class HookServer: @unchecked Sendable {
         let url = Self.museSettingsURL
         let exists = FileManager.default.fileExists(atPath: url.path)
         if !install && !exists {
-            throw NSError(domain: "CoucouNoop", code: 0, userInfo: [
+            throw NSError(domain: "BipuuNoop", code: 0, userInfo: [
                 NSLocalizedDescriptionKey: "No Muse Code hooks to remove."
             ])
         }
@@ -2064,7 +2053,7 @@ final class HookServer: @unchecked Sendable {
         let url = Self.museSettingsURL
         let current = (try? Data(contentsOf: url)) ?? Data()
         guard sha256Hex(current) == fp else {
-            throw NSError(domain: "Coucou", code: 1, userInfo: [
+            throw NSError(domain: "Bipuu", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "~/.config/muse/settings.json changed since preview. Refresh and try again."
             ])
         }
@@ -2077,8 +2066,8 @@ final class HookServer: @unchecked Sendable {
         var settings = try Self.strictReadJSONObject(at: Self.museSettingsURL,
                                                       label: "~/.config/muse/settings.json")
         if let raw = settings["hooks"], !(raw is [String: Any]) {
-            throw NSError(domain: "Coucou", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "~/.config/muse/settings.json: \"hooks\" has an unexpected type — Coucou has not touched it."
+            throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "~/.config/muse/settings.json: \"hooks\" has an unexpected type — Bipuu has not touched it."
             ])
         }
         let base = hookBase()
@@ -2096,8 +2085,8 @@ final class HookServer: @unchecked Sendable {
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         for (event, timeoutSec) in events {
             if let raw = hooks[event], !(raw is [[String: Any]]) {
-                throw NSError(domain: "Coucou", code: 2, userInfo: [
-                    NSLocalizedDescriptionKey: "~/.config/muse/settings.json: \"hooks\"[\"\(event)\"] has an unexpected type — Coucou has not touched it."
+                throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "~/.config/muse/settings.json: \"hooks\"[\"\(event)\"] has an unexpected type — Bipuu has not touched it."
                 ])
             }
             var groups = hooks[event] as? [[String: Any]] ?? []
@@ -2120,8 +2109,8 @@ final class HookServer: @unchecked Sendable {
         var settings = try Self.strictReadJSONObject(at: Self.museSettingsURL,
                                                       label: "~/.config/muse/settings.json")
         if let raw = settings["hooks"], !(raw is [String: Any]) {
-            throw NSError(domain: "Coucou", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "~/.config/muse/settings.json: \"hooks\" has an unexpected type — Coucou has not touched it."
+            throw NSError(domain: "Bipuu", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "~/.config/muse/settings.json: \"hooks\" has an unexpected type — Bipuu has not touched it."
             ])
         }
         if var hooks = settings["hooks"] as? [String: Any] {
@@ -2144,12 +2133,12 @@ final class HookServer: @unchecked Sendable {
 
     static var openCodePluginURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/opencode/plugins/coucou.js")
+            .appendingPathComponent(".config/opencode/plugins/bipuu.js")
     }
 
     static func openCodePluginInstalled() -> Bool {
         guard let content = try? String(contentsOf: openCodePluginURL, encoding: .utf8) else { return false }
-        return content.contains("nb-hook") && content.contains("opencode")
+        return content.contains("bipuu-hook") && content.contains("opencode")
     }
 
     private func buildOpenCodePluginContent() -> String {
@@ -2157,8 +2146,8 @@ final class HookServer: @unchecked Sendable {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
         return """
-// Coucou hook plugin for OpenCode — generated by Coucou.app
-// Forwards every event to the Coucou notch (fire-and-forget, never blocks).
+// Bipuu hook plugin for OpenCode — generated by Bipuu.app
+// Forwards every event to the Bipuu notch (fire-and-forget, never blocks).
 import { spawn } from 'node:child_process';
 
 const HOOK = '\(path)';
@@ -2180,7 +2169,7 @@ function forward(hook_event_name, payload) {
   p.unref();
 }
 
-export const CoucouPlugin = async (_ctx) => ({
+export const BipuuPlugin = async (_ctx) => ({
   event: async ({ event }) => {
     const hook_event_name = EVENT_MAP[event.type];
     if (!hook_event_name) return;
@@ -2217,7 +2206,7 @@ export const CoucouPlugin = async (_ctx) => ({
         let exists = FileManager.default.fileExists(atPath: url.path)
         if !install {
             guard exists else {
-                throw NSError(domain: "CoucouNoop", code: 0, userInfo: [
+                throw NSError(domain: "BipuuNoop", code: 0, userInfo: [
                     NSLocalizedDescriptionKey: "No OpenCode plugin to remove."
                 ])
             }
@@ -2238,8 +2227,8 @@ export const CoucouPlugin = async (_ctx) => ({
         let url = Self.openCodePluginURL
         let current = (try? Data(contentsOf: url)) ?? Data()
         guard sha256Hex(current) == fp else {
-            throw NSError(domain: "Coucou", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "~/.config/opencode/plugins/coucou.js changed since preview. Refresh and try again."
+            throw NSError(domain: "Bipuu", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "~/.config/opencode/plugins/bipuu.js changed since preview. Refresh and try again."
             ])
         }
         guard let content = _pendingOpenCodeContent else {
@@ -2252,7 +2241,7 @@ export const CoucouPlugin = async (_ctx) => ({
             fmt.locale = Locale(identifier: "en_US_POSIX")
             fmt.dateFormat = "yyyyMMdd-HHmmss"
             let backupURL = url.deletingLastPathComponent()
-                .appendingPathComponent("coucou.js.bak-\(fmt.string(from: Date()))")
+                .appendingPathComponent("bipuu.js.bak-\(fmt.string(from: Date()))")
             try fm.copyItem(at: url, to: backupURL)
         }
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -2265,9 +2254,9 @@ export const CoucouPlugin = async (_ctx) => ({
         let url = Self.openCodePluginURL
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        guard content.contains("generated by Coucou") else {
-            throw NSError(domain: "Coucou", code: 3, userInfo: [
-                NSLocalizedDescriptionKey: "~/.config/opencode/plugins/coucou.js was not generated by Coucou — not deleting it."
+        guard content.contains("generated by Bipuu") else {
+            throw NSError(domain: "Bipuu", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "~/.config/opencode/plugins/bipuu.js was not generated by Bipuu — not deleting it."
             ])
         }
         try FileManager.default.removeItem(at: url)
@@ -2280,12 +2269,12 @@ export const CoucouPlugin = async (_ctx) => ({
 
     static var ampPluginURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/amp/plugins/coucou.ts")
+            .appendingPathComponent(".config/amp/plugins/bipuu.ts")
     }
 
     static func ampPluginInstalled() -> Bool {
         guard let content = try? String(contentsOf: ampPluginURL, encoding: .utf8) else { return false }
-        return content.contains("nb-hook") && content.contains("'amp'")
+        return content.contains("bipuu-hook") && content.contains("'amp'")
     }
 
     private func buildAmpPluginContent() -> String {
@@ -2293,8 +2282,8 @@ export const CoucouPlugin = async (_ctx) => ({
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
         return """
-// Coucou hook plugin for Amp — generated by Coucou.app
-// Forwards every event to the Coucou notch (display only, never blocks).
+// Bipuu hook plugin for Amp — generated by Bipuu.app
+// Forwards every event to the Bipuu notch (display only, never blocks).
 import { spawn } from 'node:child_process';
 
 const HOOK = '\(path)';
@@ -2325,7 +2314,7 @@ export default function (amp: any): void {
         let exists = FileManager.default.fileExists(atPath: url.path)
         if !install {
             guard exists else {
-                throw NSError(domain: "CoucouNoop", code: 0, userInfo: [
+                throw NSError(domain: "BipuuNoop", code: 0, userInfo: [
                     NSLocalizedDescriptionKey: "No Amp plugin to remove."
                 ])
             }
@@ -2346,8 +2335,8 @@ export default function (amp: any): void {
         let url = Self.ampPluginURL
         let current = (try? Data(contentsOf: url)) ?? Data()
         guard sha256Hex(current) == fp else {
-            throw NSError(domain: "Coucou", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "~/.config/amp/plugins/coucou.ts changed since preview. Refresh and try again."
+            throw NSError(domain: "Bipuu", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "~/.config/amp/plugins/bipuu.ts changed since preview. Refresh and try again."
             ])
         }
         guard let content = _pendingAmpContent else {
@@ -2360,7 +2349,7 @@ export default function (amp: any): void {
             fmt.locale = Locale(identifier: "en_US_POSIX")
             fmt.dateFormat = "yyyyMMdd-HHmmss"
             let backupURL = url.deletingLastPathComponent()
-                .appendingPathComponent("coucou.ts.bak-\(fmt.string(from: Date()))")
+                .appendingPathComponent("bipuu.ts.bak-\(fmt.string(from: Date()))")
             try fm.copyItem(at: url, to: backupURL)
         }
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -2373,9 +2362,9 @@ export default function (amp: any): void {
         let url = Self.ampPluginURL
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        guard content.contains("generated by Coucou") else {
-            throw NSError(domain: "Coucou", code: 3, userInfo: [
-                NSLocalizedDescriptionKey: "~/.config/amp/plugins/coucou.ts was not generated by Coucou — not deleting it."
+        guard content.contains("generated by Bipuu") else {
+            throw NSError(domain: "Bipuu", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "~/.config/amp/plugins/bipuu.ts was not generated by Bipuu — not deleting it."
             ])
         }
         try FileManager.default.removeItem(at: url)
@@ -2390,7 +2379,7 @@ export default function (amp: any): void {
 
     static var hermesPluginDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".hermes/plugins/coucou")
+            .appendingPathComponent(".hermes/plugins/bipuu")
     }
     static var hermesInitPyURL: URL { hermesPluginDir.appendingPathComponent("__init__.py") }
     static var hermesPluginYamlURL: URL { hermesPluginDir.appendingPathComponent("plugin.yaml") }
@@ -2400,7 +2389,7 @@ export default function (amp: any): void {
 
     static func hermesPluginInstalled() -> Bool {
         guard let content = try? String(contentsOf: hermesInitPyURL, encoding: .utf8) else { return false }
-        return content.contains("nb-hook") && content.contains("hermes")
+        return content.contains("bipuu-hook") && content.contains("hermes")
     }
 
     /// Returns true if the installed Hermes version exposes register_approval_transport.
@@ -2488,8 +2477,8 @@ export default function (amp: any): void {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
         return """
-# Coucou hook plugin for Hermes Agent — generated by Coucou.app
-# Session/tool events → Coucou notch (fire-and-forget, never blocks).
+# Bipuu hook plugin for Hermes Agent — generated by Bipuu.app
+# Session/tool events → Bipuu notch (fire-and-forget, never blocks).
 # Approval transport: uses register_approval_transport when available (future Hermes),
 # falls back to pre_approval_request observer-only hook (hermes 0.15.x).
 import json, subprocess, threading
@@ -2505,7 +2494,7 @@ _current_session_id = ''
 
 
 def _fire(fields: dict) -> None:
-    \"\"\"Non-blocking: spawn nb-hook and return immediately. Reaps child to avoid zombies.\"\"\"
+    \"\"\"Non-blocking: spawn bipuu-hook and return immediately. Reaps child to avoid zombies.\"\"\"
     def _run() -> None:
         try:
             p = subprocess.Popen(
@@ -2578,7 +2567,7 @@ def register(ctx) -> None:
     ctx.register_hook('post_tool_call',   post_tool_call)
 
     if hasattr(ctx, 'register_approval_transport'):
-        # Hermes version supports transport API — Coucou shows a real Allow/Deny card
+        # Hermes version supports transport API — Bipuu shows a real Allow/Deny card
         # and returns the user's choice to Hermes.
         def _present(request) -> object:
             sid = (getattr(request, 'session_id', None)
@@ -2593,8 +2582,8 @@ def register(ctx) -> None:
             payload = json.dumps({
                 'hook_event_name': 'PermissionRequest',
                 'session_id': sid,
-                'coucou_agent': 'hermes',
-                'coucou_has_transport': True,
+                'bipuu_agent': 'hermes',
+                'bipuu_has_transport': True,
                 'tool_name': cmd,
                 'tool_input': {'command': cmd, 'description': desc},
             }).encode()
@@ -2614,7 +2603,7 @@ def register(ctx) -> None:
                 # Fall back to Hermes' native prompt on any error.
                 return request.respond('deny')
 
-        ctx.register_approval_transport('coucou', _present)
+        ctx.register_approval_transport('bipuu', _present)
     else:
         # Observer-only hook (hermes 0.15.x): Hermes still controls the decision.
         # Fire a PreToolUse-style step so the notch shows "⏳ Approval pending in Hermes"
@@ -2636,12 +2625,12 @@ def register(ctx) -> None:
     }
 
     private static let hermesPluginYaml = """
-name: coucou
+name: bipuu
 version: "1.0"
-description: Coucou notch integration — generated by Coucou.app
+description: Bipuu notch integration — generated by Bipuu.app
 """
 
-    /// Merges Coucou keys into a Hermes config.yaml string without touching other settings.
+    /// Merges Bipuu keys into a Hermes config.yaml string without touching other settings.
     ///
     /// Returns the merged YAML string, or nil if the file uses an unsupported structure
     /// (flow maps `{…}`, YAML anchors `&`, multi-document `---`) that the line-level
@@ -2697,7 +2686,7 @@ description: Coucou notch integration — generated by Coucou.app
         }
 
         // --- security.approval ---
-        let transportLine = "\(ind2)transport: coucou"
+        let transportLine = "\(ind2)transport: bipuu"
         let fallbackLine  = "\(ind2)transport_fallback: builtin"
 
         func ensureApprovalTransport() {
@@ -2739,19 +2728,19 @@ description: Coucou notch integration — generated by Coucou.app
         }
 
         func removeApprovalTransport() {
-            // Only remove exact Coucou-written transport keys; don't touch unrelated keys.
+            // Only remove exact Bipuu-written transport keys; don't touch unrelated keys.
             lines.removeAll { line in
                 let t = line.trimmingCharacters(in: .whitespaces)
-                return t == "transport: coucou" || t == "transport_fallback: builtin"
+                return t == "transport: bipuu" || t == "transport_fallback: builtin"
             }
         }
 
         // --- plugins.enabled ---
-        // Note: actual plugin enable/disable is done via `hermes plugins enable/disable coucou`
+        // Note: actual plugin enable/disable is done via `hermes plugins enable/disable bipuu`
         // CLI after writing/removing the plugin files. This block ensures the preview
         // shows the complete intended state of config.yaml.
-        func ensureCoucouPlugin() {
-            // "Already present" = coucou in the plugins.enabled list specifically.
+        func ensureBipuuPlugin() {
+            // "Already present" = bipuu in the plugins.enabled list specifically.
             // Check by finding plugins: section first, then enabled: sub-key within it.
             if let pluginsIdx = topLevelIndex(key: "plugins") {
                 let pluginsRange = sectionRange(from: pluginsIdx)
@@ -2762,41 +2751,41 @@ description: Coucou notch integration — generated by Coucou.app
                     let trimmed = enabledLine.trimmingCharacters(in: .whitespaces)
                     if trimmed.contains("[") && trimmed.contains("]") {
                         // Inline list: enabled: [x, y]  or  enabled: []
-                        if trimmed.contains("coucou") { return }   // already present
+                        if trimmed.contains("bipuu") { return }   // already present
                         if trimmed == "enabled: []" || trimmed == "enabled:[]" {
                             // Empty inline list → expand to block entry
                             let prefix = enabledLine.prefix(while: { $0 == " " })
                             lines[enabledIdx] = "\(prefix)enabled:"
-                            lines.insert("\(prefix)\(ind)- coucou", at: enabledIdx + 1)
+                            lines.insert("\(prefix)\(ind)- bipuu", at: enabledIdx + 1)
                         } else {
-                            lines[enabledIdx] = enabledLine.replacingOccurrences(of: "]", with: ", coucou]")
+                            lines[enabledIdx] = enabledLine.replacingOccurrences(of: "]", with: ", bipuu]")
                         }
                     } else {
-                        // Block list — check if coucou is already a child of this enabled:
+                        // Block list — check if bipuu is already a child of this enabled:
                         let enabledRange = sectionRange(from: enabledIdx)
                         let alreadyPresent = (enabledRange.lowerBound + 1 ..< enabledRange.upperBound)
-                            .contains { lines[$0].trimmingCharacters(in: .whitespaces) == "- coucou" }
+                            .contains { lines[$0].trimmingCharacters(in: .whitespaces) == "- bipuu" }
                         if alreadyPresent { return }
                         // Insert after enabled:
                         let prefix = enabledLine.prefix(while: { $0 == " " })
-                        lines.insert("\(prefix)\(ind)- coucou", at: enabledIdx + 1)
+                        lines.insert("\(prefix)\(ind)- bipuu", at: enabledIdx + 1)
                     }
                 } else {
                     // No enabled: key under plugins: — insert after plugins:
                     lines.insert("\(ind)enabled:", at: pluginsIdx + 1)
-                    lines.insert("\(ind)\(ind)- coucou", at: pluginsIdx + 2)
+                    lines.insert("\(ind)\(ind)- bipuu", at: pluginsIdx + 2)
                 }
             } else {
                 // No plugins: section — append
                 if lines.last != "" { lines.append("") }
                 lines.append("plugins:")
                 lines.append("\(ind)enabled:")
-                lines.append("\(ind)\(ind)- coucou")
+                lines.append("\(ind)\(ind)- bipuu")
             }
         }
 
-        func removeCoucouPlugin() {
-            // Remove the `- coucou` entry from plugins.enabled only.
+        func removeBipuuPlugin() {
+            // Remove the `- bipuu` entry from plugins.enabled only.
             // If that leaves enabled: with no entries, leave the key in place (don't remove it).
             guard let pluginsIdx = topLevelIndex(key: "plugins") else { return }
             let pluginsRange = sectionRange(from: pluginsIdx)
@@ -2806,24 +2795,24 @@ description: Coucou notch integration — generated by Coucou.app
             let enabledLine = lines[enabledIdx]
             let trimmed = enabledLine.trimmingCharacters(in: .whitespaces)
             if trimmed.contains("[") && trimmed.contains("]") {
-                // Inline list: remove coucou from it
+                // Inline list: remove bipuu from it
                 let cleaned = trimmed
-                    .replacingOccurrences(of: ", coucou", with: "")
-                    .replacingOccurrences(of: "coucou, ", with: "")
-                    .replacingOccurrences(of: "coucou",   with: "")
+                    .replacingOccurrences(of: ", bipuu", with: "")
+                    .replacingOccurrences(of: "bipuu, ", with: "")
+                    .replacingOccurrences(of: "bipuu",   with: "")
                 let prefix = enabledLine.prefix(while: { $0 == " " })
                 lines[enabledIdx] = "\(prefix)\(cleaned)"
             } else {
-                // Block list: remove the `- coucou` entry
+                // Block list: remove the `- bipuu` entry
                 let enabledRange = sectionRange(from: enabledIdx)
                 // Collect indices to remove first, then remove in reverse to preserve indices.
                 let toRemove = (enabledRange.lowerBound + 1 ..< enabledRange.upperBound)
-                    .filter { lines[$0].trimmingCharacters(in: .whitespaces) == "- coucou" }
+                    .filter { lines[$0].trimmingCharacters(in: .whitespaces) == "- bipuu" }
                 for i in toRemove.reversed() { lines.remove(at: i) }
             }
         }
 
-        ensureCoucouPlugin()
+        ensureBipuuPlugin()
         if enableApprovals { ensureApprovalTransport() } else { removeApprovalTransport() }
         return lines.joined(separator: "\n")
     }
@@ -2831,7 +2820,7 @@ description: Coucou notch integration — generated by Coucou.app
     func previewHermesPlugin(install: Bool) throws -> String {
         if !install {
             guard FileManager.default.fileExists(atPath: Self.hermesInitPyURL.path) else {
-                throw NSError(domain: "CoucouNoop", code: 0, userInfo: [
+                throw NSError(domain: "BipuuNoop", code: 0, userInfo: [
                     NSLocalizedDescriptionKey: "No Hermes plugin to remove."
                 ])
             }
@@ -2852,8 +2841,8 @@ description: Coucou notch integration — generated by Coucou.app
         let url = Self.hermesInitPyURL
         let current = (try? Data(contentsOf: url)) ?? Data()
         guard sha256Hex(current) == fp else {
-            throw NSError(domain: "Coucou", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "~/.hermes/plugins/coucou/__init__.py changed since preview. Refresh and try again."
+            throw NSError(domain: "Bipuu", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "~/.hermes/plugins/bipuu/__init__.py changed since preview. Refresh and try again."
             ])
         }
         let fm = FileManager.default
@@ -2871,7 +2860,7 @@ description: Coucou notch integration — generated by Coucou.app
             try Self.hermesPluginYaml.write(to: Self.hermesPluginYamlURL, atomically: true, encoding: .utf8)
             // Register the plugin with the Hermes CLI so it appears in plugins.enabled.
             // Best-effort — silently ignored if hermes is not on PATH.
-            try? Self.runHermesCLI(["plugins", "enable", "coucou"])
+            try? Self.runHermesCLI(["plugins", "enable", "bipuu"])
         }
         _pendingHermesPluginContent = nil
         _pendingHermesPluginFingerprint = nil
@@ -2881,14 +2870,14 @@ description: Coucou notch integration — generated by Coucou.app
         let url = Self.hermesInitPyURL
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        guard content.contains("generated by Coucou") else {
-            throw NSError(domain: "Coucou", code: 3, userInfo: [
-                NSLocalizedDescriptionKey: "~/.hermes/plugins/coucou/__init__.py was not generated by Coucou — not deleting it."
+        guard content.contains("generated by Bipuu") else {
+            throw NSError(domain: "Bipuu", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "~/.hermes/plugins/bipuu/__init__.py was not generated by Bipuu — not deleting it."
             ])
         }
         // Remove from hermes plugins.enabled first, then delete the files.
         // Best-effort — silently ignored if hermes is not on PATH.
-        try? Self.runHermesCLI(["plugins", "disable", "coucou"])
+        try? Self.runHermesCLI(["plugins", "disable", "bipuu"])
         try FileManager.default.removeItem(at: Self.hermesPluginDir)
     }
 
@@ -2903,7 +2892,7 @@ description: Coucou notch integration — generated by Coucou.app
             (ProcessInfo.processInfo.environment["HOME"] ?? "") + "/.local/bin/hermes",
         ]
         guard let hermesBin = hermesPaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
-            throw NSError(domain: "CoucouNoop", code: 0, userInfo: [
+            throw NSError(domain: "BipuuNoop", code: 0, userInfo: [
                 NSLocalizedDescriptionKey: "hermes CLI not found."
             ])
         }
@@ -2925,8 +2914,8 @@ description: Coucou notch integration — generated by Coucou.app
         let effectiveApprovals = enableApprovals && supportsTransport
         guard let merged = Self.mergedHermesConfig(base, enableApprovals: effectiveApprovals) else {
             _pendingHermesConfigContent = nil
-            throw NSError(domain: "Coucou", code: 4, userInfo: [
-                NSLocalizedDescriptionKey: "~/.hermes/config.yaml uses an unsupported structure (flow maps, YAML anchors, or multi-document). Edit it manually and add:\n  security:\n    approval:\n      transport: coucou\n      transport_fallback: builtin"
+            throw NSError(domain: "Bipuu", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "~/.hermes/config.yaml uses an unsupported structure (flow maps, YAML anchors, or multi-document). Edit it manually and add:\n  security:\n    approval:\n      transport: bipuu\n      transport_fallback: builtin"
             ])
         }
         _pendingHermesConfigContent = merged
@@ -2939,7 +2928,7 @@ description: Coucou notch integration — generated by Coucou.app
         let url = Self.hermesConfigURL
         let current = (try? Data(contentsOf: url)) ?? Data()
         guard sha256Hex(current) == fp else {
-            throw NSError(domain: "Coucou", code: 1, userInfo: [
+            throw NSError(domain: "Bipuu", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "~/.hermes/config.yaml changed since preview. Refresh and try again."
             ])
         }
@@ -2968,22 +2957,22 @@ description: Coucou notch integration — generated by Coucou.app
 // MARK: - Notification names for hook server → controller communication
 
 extension Notification.Name {
-    static let hookExpand = Notification.Name("notchBuddy.hookExpand")
+    static let hookExpand = Notification.Name("bipuu.hookExpand")
 }
 
-// MARK: - nb-hook shell wrapper (same for both GitHub and App Store)
+// MARK: - bipuu-hook shell wrapper (same for both GitHub and App Store)
 // Invoked by Claude Code via /bin/sh or directly via shebang.
 // Always exits 0 — never blocks Claude Code.
 // Checks xcode-select before running python3 to avoid triggering the
 // "install developer tools" dialog on machines without Xcode CLI tools.
 
-private let nbHookShellWrapper = """
+private let bipuuHookShellWrapper = """
 #!/bin/sh
-# Coucou hook relay — always exits 0, never blocks Claude Code
+# Bipuu hook relay — always exits 0, never blocks Claude Code
 HOOK_DIR="$(dirname "$0")"
 out=""
 if xcode-select -p >/dev/null 2>&1; then
-    out=$(/usr/bin/python3 "$HOOK_DIR/nb-hook.py" "$@" 2>/dev/null)
+    out=$(/usr/bin/python3 "$HOOK_DIR/bipuu-hook.py" "$@" 2>/dev/null)
     rc=$?
     if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
         out=""
@@ -3011,12 +3000,12 @@ fi
 exit 0
 """
 
-// MARK: - nb-hook Python relay (GitHub / non-sandboxed version)
+// MARK: - bipuu-hook Python relay (GitHub / non-sandboxed version)
 
-private let nbHookPythonGitHub = """
+private let bipuuHookPythonGitHub = """
 #!/usr/bin/env python3
-# nb-hook.py — Coucou hook relay for Claude Code and third-party agents (GitHub version)
-# Reads JSON from stdin, forwards to Coucou via Unix socket, translates response.
+# bipuu-hook.py — Bipuu hook relay for Claude Code and third-party agents (GitHub version)
+# Reads JSON from stdin, forwards to Bipuu via Unix socket, translates response.
 import sys, json, os, socket
 
 def normalize_event(name):
@@ -3090,13 +3079,13 @@ def main():
             return
 
     socket_path = os.path.expanduser(
-        '~/Library/Application Support/NotchBuddy/nb.sock'
+        '~/Library/Application Support/Bipuu/bipuu.sock'
     )
 
-    # --statusline mode: relay rate_limits to Coucou, then delegate to saved previous
+    # --statusline mode: relay rate_limits to Bipuu, then delegate to saved previous
     if '--statusline' in sys.argv[1:]:
         relay = {
-            'coucou_kind': 'statusline',
+            'bipuu_kind': 'statusline',
             'session_id': payload.get('session_id', ''),
             'rate_limits': payload.get('rate_limits', {}),
         }
@@ -3130,7 +3119,7 @@ def main():
         tool = payload.get('tool_name', '')
         if tool != 'AskUserQuestion':
             return  # Not an AskUserQuestion invocation — exit cleanly (no output)
-        payload['coucou_kind'] = 'ask_user_question'
+        payload['bipuu_kind'] = 'ask_user_question'
         env = os.environ
         payload.setdefault('term_program', env.get('TERM_PROGRAM', ''))
         payload.setdefault('iterm_session_id', env.get('ITERM_SESSION_ID', ''))
@@ -3176,7 +3165,7 @@ def main():
         return
 
     # Parse --agent <name> and optional positional event from argv.
-    # --agent tags the payload with coucou_agent so the app routes to the right pill.
+    # --agent tags the payload with bipuu_agent so the app routes to the right pill.
     # The positional arg is a fallback event name for agents that do not set hook_event_name.
     args = sys.argv[1:]
     agent = ''
@@ -3191,11 +3180,11 @@ def main():
                 arg_event = args[i]
             i += 1
     if agent:
-        payload.setdefault('coucou_agent', agent)
+        payload.setdefault('bipuu_agent', agent)
     # Claude Code sessions from the Claude desktop app (Code tab) report this entrypoint;
     # route them to the Claude Desktop pill instead of dropping them (no VS Code terminal).
-    if not payload.get('coucou_agent') and os.environ.get('CLAUDE_CODE_ENTRYPOINT') == 'claude-desktop':
-        payload['coucou_agent'] = 'claude-desktop'
+    if not payload.get('bipuu_agent') and os.environ.get('CLAUDE_CODE_ENTRYPOINT') == 'claude-desktop':
+        payload['bipuu_agent'] = 'claude-desktop'
 
     # Enrich with terminal context
     env = os.environ
@@ -3223,7 +3212,7 @@ def main():
     # socket_path is already defined above
 
     if event == 'PermissionRequest':
-        # Block and wait for Coucou's decision (Claude Code allows up to 120s)
+        # Block and wait for Bipuu's decision (Claude Code allows up to 120s)
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(118)
@@ -3269,7 +3258,7 @@ def main():
                     if agent in ('copilot', 'muse'):
                         out = {'permissionDecision': 'deny'}
                     else:
-                        out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'deny', 'message': 'Denied from Coucou'}}}
+                        out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'deny', 'message': 'Denied from Bipuu'}}}
                     sys.stdout.write(json.dumps(out) + '\\n')
                     sys.stdout.flush()
                     sys.exit(0)
@@ -3303,7 +3292,7 @@ def main():
         pass  # Always exit cleanly — never block the agent
 
     # Antigravity needs a decision on PreToolUse ({} reads as a denial). "ask" keeps its own
-    # permission prompt (and the user's Always Allow); Coucou never allows a tool by itself.
+    # permission prompt (and the user's Always Allow); Bipuu never allows a tool by itself.
     if agent == 'antigravity' and event == 'PreToolUse':
         sys.stdout.write('{"decision":"ask"}\\n')
         sys.stdout.flush()
@@ -3318,11 +3307,11 @@ except Exception:
 sys.exit(0)
 """
 
-// MARK: - nb-hook Python relay (App Store — socket in sandboxed container)
+// MARK: - bipuu-hook Python relay (App Store — socket in sandboxed container)
 
-private let nbHookPythonAppStore = """
+private let bipuuHookPythonAppStore = """
 #!/usr/bin/env python3
-# nb-hook.py — Coucou (App Store) hook relay for Claude Code and third-party agents
+# bipuu-hook.py — Bipuu (App Store) hook relay for Claude Code and third-party agents
 # Socket lives inside the sandboxed container; script runs outside the sandbox.
 import sys, json, os, socket
 
@@ -3397,13 +3386,13 @@ def main():
             return
 
     socket_path = os.path.expanduser(
-        '~/Library/Containers/app.example.Coucou/Data/nb.sock'
+        '~/Library/Containers/app.bipuu.Bipuu/Data/bipuu.sock'
     )
 
-    # --statusline mode: relay rate_limits to Coucou, then delegate to saved previous
+    # --statusline mode: relay rate_limits to Bipuu, then delegate to saved previous
     if '--statusline' in sys.argv[1:]:
         relay = {
-            'coucou_kind': 'statusline',
+            'bipuu_kind': 'statusline',
             'session_id': payload.get('session_id', ''),
             'rate_limits': payload.get('rate_limits', {}),
         }
@@ -3437,7 +3426,7 @@ def main():
         tool = payload.get('tool_name', '')
         if tool != 'AskUserQuestion':
             return  # Not an AskUserQuestion invocation — exit cleanly (no output)
-        payload['coucou_kind'] = 'ask_user_question'
+        payload['bipuu_kind'] = 'ask_user_question'
         env = os.environ
         payload.setdefault('term_program', env.get('TERM_PROGRAM', ''))
         payload.setdefault('iterm_session_id', env.get('ITERM_SESSION_ID', ''))
@@ -3483,7 +3472,7 @@ def main():
         return
 
     # Parse --agent <name> and optional positional event from argv.
-    # --agent tags the payload with coucou_agent so the app routes to the right pill.
+    # --agent tags the payload with bipuu_agent so the app routes to the right pill.
     # The positional arg is a fallback event name for agents that do not set hook_event_name.
     args = sys.argv[1:]
     agent = ''
@@ -3498,11 +3487,11 @@ def main():
                 arg_event = args[i]
             i += 1
     if agent:
-        payload.setdefault('coucou_agent', agent)
+        payload.setdefault('bipuu_agent', agent)
     # Claude Code sessions from the Claude desktop app (Code tab) report this entrypoint;
     # route them to the Claude Desktop pill instead of dropping them (no VS Code terminal).
-    if not payload.get('coucou_agent') and os.environ.get('CLAUDE_CODE_ENTRYPOINT') == 'claude-desktop':
-        payload['coucou_agent'] = 'claude-desktop'
+    if not payload.get('bipuu_agent') and os.environ.get('CLAUDE_CODE_ENTRYPOINT') == 'claude-desktop':
+        payload['bipuu_agent'] = 'claude-desktop'
 
     env = os.environ
     payload.setdefault('term_program', env.get('TERM_PROGRAM', ''))
@@ -3529,7 +3518,7 @@ def main():
     # socket_path is already defined above
 
     if event == 'PermissionRequest':
-        # Block and wait for Coucou's decision (Claude Code allows up to 120s)
+        # Block and wait for Bipuu's decision (Claude Code allows up to 120s)
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(118)
@@ -3575,7 +3564,7 @@ def main():
                     if agent in ('copilot', 'muse'):
                         out = {'permissionDecision': 'deny'}
                     else:
-                        out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'deny', 'message': 'Denied from Coucou'}}}
+                        out = {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': {'behavior': 'deny', 'message': 'Denied from Bipuu'}}}
                     sys.stdout.write(json.dumps(out) + '\\n')
                     sys.stdout.flush()
                     sys.exit(0)
@@ -3608,7 +3597,7 @@ def main():
         pass  # Always exit cleanly — never block the agent
 
     # Antigravity needs a decision on PreToolUse ({} reads as a denial). "ask" keeps its own
-    # permission prompt (and the user's Always Allow); Coucou never allows a tool by itself.
+    # permission prompt (and the user's Always Allow); Bipuu never allows a tool by itself.
     if agent == 'antigravity' and event == 'PreToolUse':
         sys.stdout.write('{"decision":"ask"}\\n')
         sys.stdout.flush()

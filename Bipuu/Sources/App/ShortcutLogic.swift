@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Shortcut Action
 
-/// Every keyboard shortcut Coucou knows about.
+/// Every keyboard shortcut Bipuu knows about.
 /// The first 10 cases are *global* (registered with Carbon and effective from any app).
 /// Island-local shortcuts are documented in `ShortcutLogic.islandShortcuts` but are
 /// not managed here — they are handled by a local NSEvent monitor in IslandWindowController.
