@@ -33,7 +33,8 @@ final class EventRecorder: Sendable {
     }
 
     /// `databasePath` is opened lazily on the first item, so starting the app never waits for the disk.
-    init(databasePath: String, log: @escaping @Sendable (String) -> Void = { _ in }) {
+    /// With an `inference` policy, a session seen for the first time is proposed a task (see `TaskInferrer`).
+    init(databasePath: String, inference: InferencePolicy? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
         let (stream, continuation) = AsyncStream<Message>.makeStream(bufferingPolicy: .bufferingNewest(Self.queueLimit))
         self.continuation = continuation
         let counters = counters
@@ -46,7 +47,7 @@ final class EventRecorder: Sendable {
                 case .hook(let item):
                     guard !disabled else { continue }
                     do {
-                        if sink == nil { sink = try Sink(path: databasePath) }
+                        if sink == nil { sink = try Sink(path: databasePath, inference: inference, log: log) }
                         try await sink?.write(item)
                         counters.record()
                     } catch {
@@ -102,6 +103,13 @@ final class EventRecorder: Sendable {
 
     // MARK: Default location
 
+    /// The recorder the app runs with: the standard database; and, when `inferTasks`, task inference
+    /// that treats the file system root and the home directory as too broad to be a project.
+    static func standard(supportDir: URL, inferTasks: Bool, log: @escaping @Sendable (String) -> Void) -> EventRecorder {
+        EventRecorder(databasePath: defaultDatabasePath(supportDir: supportDir),
+                      inference: inferTasks ? InferencePolicy(excludedRoots: ["/", NSHomeDirectory()]) : nil, log: log)
+    }
+
     /// `BIPUU_EVENT_DB` overrides the path (used by the end-to-end script so it never touches real data).
     static func defaultDatabasePath(supportDir: URL) -> String {
         if let p = ProcessInfo.processInfo.environment["BIPUU_EVENT_DB"], !p.isEmpty { return p }
@@ -127,9 +135,12 @@ final class EventRecorder: Sendable {
     private actor Sink {
         private let events: SQLiteEventStore
         private let domain: SQLiteDomainStore
+        private let inferrer: TaskInferrer?
+        private let log: @Sendable (String) -> Void
         private var agents = Set<AgentID>(), hosts = Set<HostID>(), sessions = Set<SessionID>()
 
-        init(path: String) throws {
+        init(path: String, inference: InferencePolicy?, log: @escaping @Sendable (String) -> Void) throws {
+            self.log = log
             // Create the file ourselves, owner-only, before SQLite does: its WAL files inherit the mode.
             if !FileManager.default.fileExists(atPath: path) {
                 let dir = (path as NSString).deletingLastPathComponent
@@ -137,29 +148,45 @@ final class EventRecorder: Sendable {
                                                          attributes: [.posixPermissions: 0o700])
                 FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
             }
-            events = try SQLiteEventStore(path: path)
-            domain = try SQLiteDomainStore(path: path)
+            let events = try SQLiteEventStore(path: path)
+            let domain = try SQLiteDomainStore(path: path)
+            self.events = events
+            self.domain = domain
+            inferrer = inference.map { TaskInferrer(domain: domain, events: events, locator: GitWorkContextLocator(), policy: $0) }
         }
 
         func write(_ item: RecordedHook) async throws {
             let id = item.identity
             if !agents.contains(id.agent.id) { try await domain.save(id.agent); agents.insert(id.agent.id) }
             if let host = id.host, !hosts.contains(host.id) { try await domain.save(host); hosts.insert(host.id) }
-            try await ensureSession(id, startedAt: item.event.occurredAt)
+            try await ensureSession(id, startedAt: item.event.occurredAt, now: item.event.occurredAt)
             if item.event.kind == .sessionEnded, var s = try await domain.session(id.sessionID), s.endedAt == nil {
                 s.endedAt = item.event.occurredAt     // read-modify-write keeps any task assignment
                 try await domain.save(s)
             }
-            _ = try await events.append(item.event)
+            // An event carries the attribution that was current when it was recorded; later
+            // reassignments never rewrite it.
+            var event = item.event
+            if let taskID = try await domain.session(id.sessionID)?.taskID {
+                event.taskID = taskID
+                event.projectID = try await domain.task(taskID)?.projectID
+            }
+            _ = try await events.append(event)
         }
 
         /// Creates the session on first sight; never overwrites one that exists (it may have a task by now).
-        private func ensureSession(_ id: HookIdentity, startedAt: Date) async throws {
+        private func ensureSession(_ id: HookIdentity, startedAt: Date, now: Date) async throws {
             guard !sessions.contains(id.sessionID) else { return }
             if try await domain.session(id.sessionID) == nil {
                 try await domain.save(Session(id: id.sessionID, agentID: id.agent.id, hostID: id.host?.id,
                                               workingDirectory: id.workingDirectory, externalRef: id.externalRef,
                                               startedAt: startedAt))
+                // Only a brand-new session is proposed a task: one that already exists (assigned, or
+                // detached by the user) is never revisited, so inference cannot undo a user's choice.
+                if let inferrer {
+                    do { _ = try await inferrer.place(session: id.sessionID, at: now) }
+                    catch { log("Task inference failed for a new session (\(String(describing: type(of: error))))") }
+                }
             }
             sessions.insert(id.sessionID)
         }

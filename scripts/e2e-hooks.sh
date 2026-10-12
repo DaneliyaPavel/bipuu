@@ -42,10 +42,13 @@ check "socket is 0600"             '[ "$(stat -f %Lp "$SUP/bipuu.sock")" = 600 ]
 check "channel key is 0600"        '[ "$(stat -f %Lp "$SUP/channel.key")" = 600 ]'
 check "relay installed"            '[ -x "$H" ] && [ -f "$SUP/bipuu-hook.py" ]'
 
+# A real repository for the flow below, so task inference has something to find.
+DEMO="$OUT/demo"; rm -rf "$DEMO"; mkdir -p "$DEMO" && git init -q -b feature/e2e "$DEMO"
+
 echo "2. Events through the real relay"
 send() { printf '%s' "$1" | env -u CLAUDE_CODE_ENTRYPOINT TERM_PROGRAM=vscode "$H" "${@:2}"; }
 for ev in SessionStart UserPromptSubmit PreToolUse PostToolUse Stop; do
-  send "{\"hook_event_name\":\"$ev\",\"session_id\":\"e2e-flow\",\"cwd\":\"/tmp/demo\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"pytest -q\"},\"prompt\":\"hello\"}"
+  send "{\"hook_event_name\":\"$ev\",\"session_id\":\"e2e-flow\",\"cwd\":\"$DEMO\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"pytest -q\"},\"prompt\":\"hello\"}"
 done
 sleep 1
 for ev in SessionStart UserPromptSubmit PreToolUse PostToolUse Stop; do
@@ -61,9 +64,14 @@ echo "2b. Events are recorded"
 check "database exists and is 0600"        '[ "$(stat -f %Lp "$DB" 2>/dev/null)" = 600 ]'
 check "schema version is 2"                '[ "$(q "PRAGMA user_version")" = 2 ]'
 check "the flow was recorded in order"     '[ "$(q "SELECT group_concat(event_kind, \",\") FROM (SELECT event_kind FROM events WHERE session_id = \"claude:e2e-flow\" ORDER BY occurred_at_us, received_at_us, event_id)")" = "session.started,prompt.submitted,tool.started,tool.finished,turn.finished" ]'
-check "the session exists, unattached"     '[ "$(q "SELECT count(*) FROM sessions WHERE session_id = \"claude:e2e-flow\" AND task_id IS NULL")" = 1 ]'
+check "the session exists"                 '[ "$(q "SELECT count(*) FROM sessions WHERE session_id = \"claude:e2e-flow\"")" = 1 ]'
 check "no prompt or command text was stored" '[ "$(q "SELECT count(*) FROM events WHERE raw_json LIKE \"%pytest%\" OR raw_json LIKE \"%hello%\"")" = 0 ]'
 check "tool name and category were stored" '[ "$(q "SELECT count(*) FROM events WHERE event_kind = \"tool.started\" AND json_extract(CAST(raw_json AS TEXT), \"$.payload.category\") = \"execute\" AND json_extract(CAST(raw_json AS TEXT), \"$.payload.tool\") = \"Bash\"")" -ge 1 ]'
+
+check "a project was discovered from the repository" '[ "$(q "SELECT count(*) FROM projects WHERE json_extract(CAST(raw_json AS TEXT), \"$.name\") = \"demo\"")" = 1 ]'
+check "an inferred task was proposed (project · branch)" '[ "$(q "SELECT count(*) FROM tasks WHERE json_extract(CAST(raw_json AS TEXT), \"$.origin\") = \"inferred\" AND json_extract(CAST(raw_json AS TEXT), \"$.title\") = \"demo · feature/e2e\"")" = 1 ]'
+check "the session is attached to it"      '[ "$(q "SELECT count(*) FROM sessions s JOIN tasks t ON t.task_id = s.task_id WHERE s.session_id = \"claude:e2e-flow\"")" = 1 ]'
+check "all five events carry the task"     '[ "$(q "SELECT count(*) FROM events WHERE session_id = \"claude:e2e-flow\" AND task_id IS NOT NULL AND project_id IS NOT NULL")" = 5 ]'
 
 echo "3. Forged messages are not acted on"
 python3 - "$SUP/bipuu.sock" <<'EOF' || bad "forgery probe failed"

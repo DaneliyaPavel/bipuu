@@ -75,14 +75,19 @@ public struct WorkTask: Hashable, Sendable, Codable, Identifiable {
     public var title: String
     public var origin: TaskOrigin
     public var status: TaskStatus
+    /// Set on tasks Bipuu proposed: the context (project root, branch) new sessions are matched
+    /// against. It stays after the user confirms the task, so later sessions keep joining it.
+    /// Tasks created by hand have none and are never joined automatically. Absent in older data.
+    public var inferenceKey: String?
     public var createdAt: Date
     public var updatedAt: Date
 
     public init(id: TaskID = .generate(), projectID: ProjectID? = nil, title: String,
-                origin: TaskOrigin = .explicit, status: TaskStatus = .open,
+                origin: TaskOrigin = .explicit, status: TaskStatus = .open, inferenceKey: String? = nil,
                 createdAt: Date, updatedAt: Date? = nil) {
         self.id = id; self.projectID = projectID; self.title = title; self.origin = origin
-        self.status = status; self.createdAt = createdAt; self.updatedAt = updatedAt ?? createdAt
+        self.status = status; self.inferenceKey = inferenceKey
+        self.createdAt = createdAt; self.updatedAt = updatedAt ?? createdAt
     }
 }
 
