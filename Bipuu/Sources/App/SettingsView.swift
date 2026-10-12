@@ -119,6 +119,7 @@ struct SettingsView: View {
                         SettingsSidebarRow(title: "General",      icon: "gearshape.fill",                    color: "#8E939C").tag("general")
                         SettingsSidebarRow(title: "Active pills", icon: "square.grid.2x2.fill",              color: "#F5A524").tag("activepills")
                         SettingsSidebarRow(title: "Agents",       icon: "terminal.fill",                     color: "#3B9EFF").tag("agents")
+                        SettingsSidebarRow(title: "History",      icon: "clock.arrow.circlepath",            color: "#34D399").tag("history")
                         SettingsSidebarRow(title: "Shortcuts",    icon: "keyboard.fill",                     color: "#6366F1").tag("shortcuts")
                     }
                     .listStyle(.sidebar)
@@ -169,6 +170,7 @@ struct SettingsView: View {
         case "chat":         return String(localized: "Chat")
         case "integrations": return String(localized: "Integrations")
         case "voice":        return String(localized: "Voice")
+        case "history":      return String(localized: "History")
         case "shortcuts":    return String(localized: "Shortcuts")
         default:             return String(localized: "General")
         }
@@ -178,6 +180,8 @@ struct SettingsView: View {
         switch selectedSection {
         case "activepills":  activePillsSection
         case "agents":       agentsSection
+        case "history":      HistorySettingsView(databasePath: EventRecorder.defaultDatabasePath(supportDir: HookServer.supportDir),
+                                                 reveal: { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: EventRecorder.defaultDatabasePath(supportDir: HookServer.supportDir))]) })
         case "shortcuts":    ShortcutsSettingsView()
         default:             generalSection
         }

@@ -24,6 +24,12 @@ func appendAppLog(_ fileName: String, _ message: String,
     }
 }
 
+/// Runs `work` after every log line queued so far has been written (the queue is FIFO). Use it before a
+/// quit, so the line that explains the quit is not lost.
+func afterAppLogFlushed(_ work: @escaping @Sendable () -> Void) {
+    AppLogWriter.queue.async(execute: work)
+}
+
 private enum AppLogWriter {
     static let queue = DispatchQueue(label: "app.bipuu.Bipuu", qos: .utility)
     static let maxLogBytes = 1_048_576 // 1 MB

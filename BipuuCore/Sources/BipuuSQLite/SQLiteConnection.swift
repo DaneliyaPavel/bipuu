@@ -85,6 +85,12 @@ final class SQLiteConnection: @unchecked Sendable {
         guard rc == SQLITE_DONE || rc == SQLITE_ROW else { throw Self.error(rc, db) }
     }
 
+    /// Rows changed by the most recent statement.
+    func changes() throws -> Int { Int(sqlite3_changes(try handle())) }
+
+    /// Merges the write-ahead log back into the database and truncates it. Best effort.
+    func checkpointTruncate() { try? exec("PRAGMA wal_checkpoint(TRUNCATE)") }
+
     /// Runs a query and maps each row.
     func query<T>(_ sql: String, _ binds: [Bind] = [], _ row: (OpaquePointer) throws -> T) throws -> [T] {
         let stmt = try prepare(sql)

@@ -122,4 +122,4 @@ events of the canonical order, ascending.
 
 Deleting entities, merging/splitting tasks · UI for confirming proposed tasks · `Result` entity · task inference · project discovery ·
 AgentAdapter / HostAdapter protocols · HookServer producing `AgentEvent` · cost tracking ·
-CI/deploy models · event retention/compaction · cross-source clock correction · sync between machines.
+CI/deploy models · compaction or archiving of pruned history · cross-source clock correction · sync between machines.

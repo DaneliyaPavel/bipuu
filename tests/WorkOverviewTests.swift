@@ -66,6 +66,7 @@ struct WorkOverviewTests {
 
     /// Pixels that are clearly lighter than the dark card: the text, dots and icons. A blank render has none.
     static func brightPixels(_ rep: NSBitmapImageRep) -> Int {
+        let scale = max(1, Double(rep.pixelsWide) / rep.size.width)      // per 1x point grid: same on a 1x runner and a 2x display
         var n = 0
         for y in 0..<rep.pixelsHigh {
             for x in 0..<rep.pixelsWide {
@@ -73,7 +74,7 @@ struct WorkOverviewTests {
                 if c.redComponent + c.greenComponent + c.blueComponent > 1.2 { n += 1 }
             }
         }
-        return n
+        return Int(Double(n) / (scale * scale))
     }
 
     static func main() {
@@ -101,14 +102,17 @@ struct WorkOverviewTests {
         // Rendering: the populated list and the empty state really draw something.
         let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : NSTemporaryDirectory()
         let full = render(fixture(), to: out + "/work-overview.png")
-        check(full != nil && brightPixels(full!) > 800, "populated list draws text (\(full.map(brightPixels) ?? 0) bright pixels)")
+        print("  (populated: \(full.map(brightPixels) ?? 0) bright px per 1x grid, bitmap \(full?.pixelsWide ?? 0) px wide)")
+        check(full != nil && brightPixels(full!) > 500, "populated list draws text (\(full.map(brightPixels) ?? 0) bright pixels)")
         let empty = render(WorkOverview(groups: [], unattachedSessionCount: 0, hiddenTaskCount: 0), to: out + "/work-overview-empty.png")
-        check(empty != nil && brightPixels(empty!) > 200, "empty state draws text")
+        print("  (empty: \(empty.map(brightPixels) ?? 0), attention below)")
+        check(empty != nil && brightPixels(empty!) > 300, "empty state draws text")
         let blank = render(WorkOverview(groups: [ProjectGroup(project: nil, tasks: [])], unattachedSessionCount: 0, hiddenTaskCount: 0), to: out + "/work-overview-blank.png")
         check(blank != nil && brightPixels(blank!) < brightPixels(full!) / 10, "the check can tell a blank picture from a full one")
         let attention = render(WorkOverview(groups: [ProjectGroup(project: nil, tasks: [row("Needs a decision", approvals: 2, last: ago(30))])],
                                             unattachedSessionCount: 0, hiddenTaskCount: 0), to: out + "/work-overview-attention.png")
-        check(attention != nil && brightPixels(attention!) > 150, "attention row draws")
+        print("  (attention: \(attention.map(brightPixels) ?? 0))")
+        check(attention != nil && brightPixels(attention!) > 300, "attention row draws")
 
         if failures == 0 { print("Work overview: all cases passed") } else { print("\(failures) failure(s)"); exit(1) }
     }

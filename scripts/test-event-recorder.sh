@@ -7,6 +7,6 @@ source scripts/_sdk.sh
 scripts/build-core-modules.sh "$TEST_DIR/mods"
 swiftc -swift-version 6 -target "$SWIFT_TARGET" -sdk "$SDK" -parse-as-library -I "$TEST_DIR/mods" -L "$TEST_DIR/mods" \
     -lBipuuCore -lBipuuSQLite \
-    Bipuu/Sources/App/Recording/HookEventAdapter.swift Bipuu/Sources/App/Recording/EventRecorder.swift \
+    Bipuu/Sources/App/Recording/HookEventAdapter.swift Bipuu/Sources/App/Recording/EventRecorder.swift Bipuu/Sources/App/Recording/HistorySettings.swift \
     tests/EventRecorderTests.swift -o "$TEST_DIR/event-recorder-tests"
 "$TEST_DIR/event-recorder-tests"

@@ -10,7 +10,7 @@ scripts/build-core-modules.sh "$TEST_DIR/mods"
 swiftc -swift-version 6 -target "$SWIFT_TARGET" -sdk "$SDK" -parse-as-library -I "$TEST_DIR/mods" -L "$TEST_DIR/mods" \
     -lBipuuCore -lBipuuSQLite \
     Bipuu/Sources/BipuuKit/ColorHex.swift Bipuu/Sources/App/Work/WorkOverviewView.swift Bipuu/Sources/App/Work/WorkModel.swift \
-    Bipuu/Sources/App/Recording/HookEventAdapter.swift Bipuu/Sources/App/Recording/EventRecorder.swift \
+    Bipuu/Sources/App/Recording/HookEventAdapter.swift Bipuu/Sources/App/Recording/EventRecorder.swift Bipuu/Sources/App/Recording/HistorySettings.swift \
     tests/WorkModelTests.swift -o "$TEST_DIR/work-model-tests"
 OUT="${1:-$TEST_DIR}"; mkdir -p "$OUT"
 "$TEST_DIR/work-model-tests" "$OUT"

@@ -116,6 +116,13 @@ phase (`unknown/working/idle/failed/ended`), pending approvals (matched by paylo
 last activity. A `TaskSummary` is the roll-up of the sessions **currently** attached to the task (`Session.taskID`), not of
 the `taskID` stamped on old events, so reassigning a session moves its activity without rewriting history.
 
+## Retention
+
+`EventRetention` (core; implemented by both event stores): `prune(policy, now)` removes events older than `now - maxAge`, then the oldest
+beyond `maxEvents` in canonical order, and reports the two counts; an event exactly at the cutoff is kept; it is idempotent. This is the one
+exception to "events are never removed". SQLite does it in one transaction and then truncates the WAL; the file keeps its peak size.
+Policy, schedule and settings: [EVENT_RECORDING.md](EVENT_RECORDING.md#controls-and-retention). Contract: `RetentionContract`.
+
 ## Migrations
 
 `user_version` 0 → 1 (events) and 1 → 2 (domain tables) each run in one transaction with their version bump; the steps are listed in `SQLiteConnection.migrations`, so a database from Slice 2 upgrades in place and keeps its events.
@@ -125,5 +132,5 @@ Each future version adds one forward step.
 
 ## Deferred (next slices)
 
-Deleting entities · merging and splitting tasks · materialised or cached projections · HookServer writing events and entities · task inference · adapters · UI · retention and compaction · encryption at rest ·
+Deleting entities · merging and splitting tasks · materialised or cached projections · HookServer writing events and entities · task inference · adapters · UI · archiving what retention removes · encryption at rest ·
 database file location and permissions (decided with the app integration) · multi-process access policy.

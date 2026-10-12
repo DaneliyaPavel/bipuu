@@ -57,11 +57,32 @@ The database is `~/Library/Application Support/Bipuu/bipuu.sqlite` (override: `B
 inside the 0700 support directory. Recording is on by default and can be turned off with the `recordEvents` default
 (`defaults write app.bipuu.Bipuu recordEvents -bool false`) or `BIPUU_RECORD_EVENTS=0`. Task inference has its own switch (`inferTasks`, `BIPUU_INFER_TASKS=0`). Nothing leaves the machine.
 
+## Controls and retention
+
+Settings → **History** (the same switches work from the command line for scripts and tests):
+
+| Choice | Default | Effect |
+|---|---|---|
+| Record agent activity (`recordEvents`, `BIPUU_RECORD_EVENTS=0`) | on | Off: the app still handles every hook as usual; nothing is built, queued or written, and no database is created. Takes effect with the next event. |
+| Suggest tasks for new sessions (`inferTasks`, `BIPUU_INFER_TASKS=0`) | on | Needs recording. Applies to the next *new* session; existing sessions are never revisited. |
+| Keep history for (`historyRetentionDays`: 30, 90, 365, 0 = no age limit) | 90 days | See below. Anything else stored falls back to 90. |
+
+**Retention.** After the first event of a run and then every 500 stored events, the recorder prunes: events older than the chosen age go, then
+the oldest events beyond 200 000 (that cap applies even with "as long as possible"). Pruning removes events only; projects, tasks, sessions,
+agents and hosts stay. It is a transaction, followed by a WAL checkpoint. The file does not shrink below its peak (freed pages are reused),
+so its size is bounded by the cap, not reduced by it. The log says how many events were removed, never which. A failure to prune is logged
+and does not stop recording. No timers: pruning is driven by events.
+
+**Crash safety.** Every event is committed before it is acknowledged; the database is in WAL mode. A real `kill -9` test (a child process
+writing events and sessions, killed mid-write, four times) checks that every acknowledged write is present, the log has no gaps, at most the
+one write in flight is extra, `integrity_check` is `ok`, and the store keeps working. A power cut or OS crash can lose the last few
+transactions (`synchronous = NORMAL`) but cannot corrupt the database.
+
 ## Verification
 
-`scripts/test-hook-event-adapter.sh`, `scripts/test-event-recorder.sh` (real SQLite in temp files), and section 2b/4 of
+`scripts/test-hook-event-adapter.sh`, `scripts/test-event-recorder.sh` (real SQLite in temp files; retention and switches), `scripts/test-history-settings.sh`, and section 2b/4 of
 `scripts/e2e-hooks.sh` against the real app and relay.
 
 ## Deferred
 
-Retention and size limits (the database grows without bound for now) · recording content (opt-in) · environments · restoring island state from the log · a settings switch in the UI. The [work view](WORK_VIEW.md) is the first reader of the log.
+Archiving what retention removes · an "erase all history" button · recording content (opt-in) · environments · restoring island state from the log. The [work view](WORK_VIEW.md) is the first reader of the log.
