@@ -24,10 +24,14 @@ public func checkThrows<E: Error & Equatable>(isolation: isolated (any Actor)? =
     catch { failures += 1; print("  FAIL \(file):\(line) expected \(expected), got \(error)") }
 }
 
+/// Output is line-buffered even when redirected, so a crash never swallows the lines that came before it.
+public func unbufferOutput() { setvbuf(stdout, nil, _IOLBF, 0) }
+
 public func run(isolation: isolated (any Actor)? = #isolation, _ name: String, _ body: () async throws -> Void) async {
     let before = failures
     do { try await body() } catch { failures += 1; print("  ERROR \(name): \(error)") }
     print("\(failures == before ? "ok  " : "FAIL") \(name)")
+    fflush(stdout)
 }
 
 public func finish() -> Never {

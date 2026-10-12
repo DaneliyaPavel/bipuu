@@ -4,6 +4,8 @@ import BipuuChecking
 import BipuuCore
 import BipuuSQLite
 
+unbufferOutput()
+
 // MARK: helpers (raw access to the database file, independent of the store under test)
 
 func tempDB() -> String {

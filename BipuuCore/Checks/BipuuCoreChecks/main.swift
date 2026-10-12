@@ -1,6 +1,8 @@
 import BipuuChecking
 import BipuuCore
 
+unbufferOutput()
+
 await run("IdentifierTests.idsEncodeAsPlainStrings") { try await IdentifierTests().idsEncodeAsPlainStrings() }
 await run("IdentifierTests.generatedIDsAreUniqueAndHashable") { try await IdentifierTests().generatedIDsAreUniqueAndHashable() }
 await run("IdentifierTests.idTypesAreDistinct") { try await IdentifierTests().idTypesAreDistinct() }
