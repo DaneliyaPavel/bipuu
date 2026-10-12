@@ -1,0 +1,409 @@
+import Foundation
+import SwiftUI
+import Combine
+
+
+@MainActor
+final class AppState: ObservableObject {
+    static let shared = AppState()
+
+    // Island state
+    @Published var mode: IslandMode = .hidden
+    @Published var view: IslandView = .overview
+
+    // Tasks
+    @Published var tasks: [AgentTask] = []
+    @Published var focusId: String? = nil
+
+    // Bot state override
+    @Published var stateOverride: BotState? = nil
+
+    // Real notch dimensions (set by IslandWindowController on launch)
+    var notchWidth:  CGFloat = IslandConst.notchWidth
+    var notchHeight: CGFloat = IslandConst.notchHeight
+    var hasNotch = true
+
+    // Last app active before NotchBuddy (for window context capture)
+    var lastExternalApp: NSRunningApplication? = nil
+
+    // Mouse tracking
+    var mousePosition: CGPoint = .zero
+    var lastMouseMove: Date = .now
+    var lastActivity: Date = .now
+    var isPresent: Bool = true
+
+    // Pinned (alerts that stay open, never auto-close)
+    var isPinned: Bool = false
+
+    // Keyboard navigation — index of the selected item within the current card's list (nil = none)
+    @Published var cardSelection: Int? = nil
+    // Number of navigable items in the card currently on screen (0 = no list)
+    @Published var cardItemCount: Int = 0
+
+    // A colour of the user's own for each pill's Mochi (pill id → "#RRGGBB") — persisted.
+    // Empty means the catalog's colours. PillDefinition.color reads the stored value, so
+    // what is built from the catalog follows on its own; the tasks already on the island
+    // hold a copy of their colour and are repainted here.
+    @Published var pillColors: [String: String] = [:] {
+        didSet {
+            PillColors.stored = pillColors
+            var repainted = tasks
+            var changed = false
+            for i in repainted.indices {
+                guard let def = PillCatalog.definition(for: repainted[i].id),
+                      repainted[i].color != def.color else { continue }
+                repainted[i].color = def.color
+                changed = true
+            }
+            if changed { tasks = repainted }
+        }
+    }
+    /// Picks a colour for a pill's Mochi; nil, or the pill's own catalog colour, goes back to the default.
+    func setPillColor(_ id: String, _ hex: String?) {
+        guard let def = PillCatalog.definition(for: id) else { return }
+        pillColors = PillColors.picking(hex, for: id, catalogColor: def.defaultColor, in: pillColors)
+    }
+
+    // The always-on workspace pill (default: VS Code). Persisted.
+    @Published var mainPillId: String = PillCatalog.defaultMainPillId {
+        didSet { UserDefaults.standard.set(mainPillId, forKey: "mainPill") }
+    }
+
+    // Selected app language ("" = System, else BCP-47 code e.g. "fr")
+    @Published var appLanguage: String = {
+        let bundleId = Bundle.main.bundleIdentifier ?? "app.bipuu.Bipuu"
+        let langs = UserDefaults.standard.persistentDomain(forName: bundleId)?["AppleLanguages"] as? [String]
+        return langs?.first ?? ""
+    }()
+
+    // Short note message (shown in NoteView)
+    @Published var noteMessage: String? = nil
+
+    // Auto-close delay — persisted
+    // Hovering the island opens it (folds shortly after the pointer leaves) — persisted, off by default
+    @Published var openOnHover: Bool = false {
+        didSet { UserDefaults.standard.set(openOnHover, forKey: "openOnHover") }
+    }
+    @Published var autoCloseInterval: TimeInterval = 15 {
+        didSet { UserDefaults.standard.set(autoCloseInterval, forKey: "autoCloseInterval") }
+    }
+
+    // Absence interval — persisted
+    var absenceInterval: TimeInterval = 3 * 60 {
+        didSet { UserDefaults.standard.set(absenceInterval, forKey: "absenceInterval") }
+    }
+
+
+    // Hotkey to show island (e.g. ⌘⇧N)
+    @Published var hotkeyEnabled: Bool = false {
+        didSet { UserDefaults.standard.set(hotkeyEnabled, forKey: "hotkeyEnabled") }
+    }
+    var hotkeyFlags: UInt = NSEvent.ModifierFlags([.command, .shift]).rawValue {
+        didSet { UserDefaults.standard.set(Int(hotkeyFlags), forKey: "hotkeyFlags") }
+    }
+    var hotkeyCode: UInt16 = 45 {  // 'n'
+        didSet { UserDefaults.standard.set(Int(hotkeyCode), forKey: "hotkeyCode") }
+    }
+
+    // Screen hosting the island (notch screen by default) — persisted
+    @Published var islandDisplay: IslandDisplayChoice = .notch {
+        didSet { UserDefaults.standard.set(islandDisplay.storageValue, forKey: "islandDisplay") }
+    }
+
+    // Active integration pills (main workspace pill excluded). Max 4.
+    @Published var activeIntegrations: Set<String> = [] {
+        didSet {
+            if let data = try? JSONEncoder().encode(Array(activeIntegrations)) {
+                UserDefaults.standard.set(data, forKey: "activeIntegrations")
+            }
+        }
+    }
+
+    // Pending approval request from Claude Code hook
+    @Published var pendingApproval: ApprovalInfo? = nil
+
+    // Pending AskUserQuestion from Claude Code hook
+    @Published var pendingQuestion: AskQuestion? = nil {
+        didSet { QuestionLayout.height = pendingQuestion?.estimatedIslandHeight }
+    }
+
+    // Per-pill flat list of FileDiffs, in order of reception.
+    // Not @Published — steps[] changes already trigger redraws.
+    var sessionDiffs: [String: [FileDiff]] = [:]
+    private var sessionDiffTimers: [String: DispatchWorkItem] = [:]
+    // Monotonically increasing — never reset, not even in clearSessionDiffs.
+    private var nextDiffId: Int = 0
+
+    @discardableResult
+    func appendSessionDiff(_ diff: FileDiff, for pillId: String) -> Int {
+        var d = diff
+        d.id = nextDiffId
+        nextDiffId += 1
+        if sessionDiffs[pillId] == nil { sessionDiffs[pillId] = [] }
+        sessionDiffs[pillId]!.append(d)
+        // Keep at most 50 diffs per pill; drop oldest first
+        while sessionDiffs[pillId]!.count > 50 {
+            sessionDiffs[pillId]!.removeFirst()
+        }
+        resetSessionDiffTimer(for: pillId)
+        return d.id
+    }
+
+    func clearSessionDiffs(for pillId: String) {
+        sessionDiffTimers[pillId]?.cancel()
+        sessionDiffTimers.removeValue(forKey: pillId)
+        sessionDiffs.removeValue(forKey: pillId)
+        // nextDiffId intentionally NOT reset — ids remain unique across sessions
+    }
+
+    private func resetSessionDiffTimer(for pillId: String) {
+        sessionDiffTimers[pillId]?.cancel()
+        // The closure is MainActor-isolated (AppState is @MainActor): it must run on the main
+        // queue. Scheduled on a global queue, Swift 6's isolation check traps and the app quits.
+        let work = DispatchWorkItem { [weak self] in
+            self?.clearSessionDiffs(for: pillId)
+        }
+        sessionDiffTimers[pillId] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3600, execute: work)
+    }
+
+    // Claude plan gauge (from statusline hook)
+    @Published var claudePlanUsage: PlanUsage? = nil {
+        didSet {
+            if let u = claudePlanUsage,
+               let data = try? JSONEncoder().encode(u) {
+                UserDefaults.standard.set(data, forKey: "claudePlanUsage")
+            }
+        }
+    }
+
+    // Plan gauge: show pill in notch header — persisted
+    @Published var showPlanInNotch: Bool = false {
+        didSet { UserDefaults.standard.set(showPlanInNotch, forKey: "showPlanInNotch") }
+    }
+    // Cached relay-installed state — updated at launch, after install/uninstall, on Settings open
+    @Published var planRelayInstalled: Bool = false
+    // Transient — reset when island closes or view changes
+    @Published var showingPlanDetail: Bool = false
+
+    // Codex plan gauge (from `codex app-server`) — fetched when the pill shows
+    @Published var showCodexPlanInNotch: Bool = false {
+        didSet { UserDefaults.standard.set(showCodexPlanInNotch, forKey: "showCodexPlanInNotch") }
+    }
+    @Published var codexPlanUsage: CodexPlanUsage? = nil
+    // Which card showingPlanDetail opens
+    @Published var planDetailIsCodex: Bool = false
+
+    /// Rate-limited on the attempt, not only on success: without Codex installed or
+    /// signed in, every appearance of the pill used to spawn `codex app-server` again.
+    private static var lastCodexAttempt: Date = .distantPast
+    private static var codexFetchInFlight = false
+
+    func refreshCodexPlanUsage() {
+        if let u = codexPlanUsage, Date().timeIntervalSince(u.updatedAt) < 60 { return }
+        guard !Self.codexFetchInFlight, Date().timeIntervalSince(Self.lastCodexAttempt) > 60 else { return }
+        Self.codexFetchInFlight = true
+        Self.lastCodexAttempt = Date()
+        Task {
+            if let u = await CodexPlanGauge.fetch() { codexPlanUsage = u }
+            Self.codexFetchInFlight = false
+        }
+    }
+
+    func refreshPlanRelayState() {
+        planRelayInstalled = HookServer.statusLineInstalled()
+    }
+
+    // MARK: - Init (loads persisted settings)
+
+    private init() {
+        let ud = UserDefaults.standard
+
+        pillColors = PillColors.stored
+        if let v = ud.object(forKey: "openOnHover") as? Bool { openOnHover = v }
+        if let v = ud.object(forKey: "autoCloseInterval") as? Double {
+            autoCloseInterval = (v == 60) ? 15 : v
+        }
+        if let v = ud.object(forKey: "absenceInterval")   as? Double { absenceInterval   = v }
+        if let v = ud.object(forKey: "hotkeyEnabled") as? Bool  { hotkeyEnabled = v }
+        if let v = ud.object(forKey: "hotkeyFlags")   as? Int   { hotkeyFlags = UInt(v) }
+        if let v = ud.object(forKey: "hotkeyCode")    as? Int   { hotkeyCode = UInt16(v) }
+        if let v = ud.string(forKey: "islandDisplay") { islandDisplay = IslandDisplayChoice(storageValue: v) }
+        if let d = ud.data(forKey: "activeIntegrations"),
+           let a = try? JSONDecoder().decode([String].self, from: d) { activeIntegrations = Set(a) }
+        if let v = ud.string(forKey: "mainPill"), !v.isEmpty,
+           PillCatalog.available.contains(where: { $0.id == v && $0.category == .workspace && !$0.comingSoon }) {
+            mainPillId = v
+        }
+        if let d = ud.data(forKey: "claudePlanUsage"),
+           let u = try? JSONDecoder().decode(PlanUsage.self, from: d) { claudePlanUsage = u }
+        if let v = ud.object(forKey: "showPlanInNotch") as? Bool { showPlanInNotch = v }
+        if let v = ud.object(forKey: "showCodexPlanInNotch") as? Bool { showCodexPlanInNotch = v }
+        planRelayInstalled = HookServer.statusLineInstalled()
+
+
+        // Always load integration pills
+        loadIntegrationTasks()
+    }
+
+    // MARK: - Computed
+
+    var focusTask: AgentTask? {
+        tasks.first { $0.id == focusId } ?? tasks.first
+    }
+
+    var effectiveState: BotState {
+        stateOverride ?? focusTask?.state ?? .idle
+    }
+
+    // MARK: - Task management
+
+    func addTask(_ task: AgentTask) {
+        guard !tasks.contains(where: { $0.id == task.id }) else { return }
+        tasks.append(task)
+        if focusId == nil { focusId = task.id }
+        syncMode()
+        syncView()
+    }
+
+    func removeTask(id: String) {
+        // mainPillId: always reset, never remove (the active workspace tool)
+        // activeIntegrations: also reset (user declared it active, keep it as idle)
+        let isProtected = id == mainPillId
+        let isActiveDecl = PillCatalog.definition(for: id) != nil && activeIntegrations.contains(id)
+        if isProtected || isActiveDecl {
+            if let idx = tasks.firstIndex(where: { $0.id == id }) {
+                let catalogName = PillCatalog.definition(for: id)?.name
+                tasks[idx].state      = .idle
+                tasks[idx].steps      = []
+                tasks[idx].stepIndex  = 0
+                tasks[idx].pillBadge  = nil
+                if let n = catalogName { tasks[idx].name = n }
+            }
+            return
+        }
+        // Undeclared or declared-but-not-active: remove
+        tasks.removeAll { $0.id == id }
+        if focusId == id { focusId = mainPillId }
+        syncMode()
+        syncView()
+    }
+
+    func updateTask(id: String, state: BotState) {
+        guard let idx = tasks.firstIndex(where: { $0.id == id }) else { return }
+        tasks[idx].state = state
+    }
+
+    func setFocus(_ id: String) {
+        guard let idx = tasks.firstIndex(where: { $0.id == id }) else { return }
+        focusId = id
+        tasks[idx].pillBadge = nil  // clear badge when user brings task to focus
+    }
+
+    func setPillBadge(_ badge: PillBadge, for id: String) {
+        guard let idx = tasks.firstIndex(where: { $0.id == id }) else { return }
+        tasks[idx].pillBadge = badge
+    }
+
+
+    func syncMode() {
+        // If no tasks and not expanded/peek, go hidden
+        if tasks.isEmpty && mode == .compact {
+            mode = .hidden
+        } else if !tasks.isEmpty && mode == .hidden && isPresent {
+            mode = .compact
+        }
+    }
+
+    func syncView() {
+        guard mode == .expanded else { return }
+        if view == .empty && !tasks.isEmpty { view = .overview }
+        else if view == .overview && tasks.isEmpty { view = .empty }
+    }
+
+    /// Load catalog pills into tasks, respecting activeIntegrations. Safe to call multiple times.
+    func loadIntegrationTasks() {
+        let catalog = PillCatalog.available
+        // Sanitize: remove saved IDs not in catalog
+        let catalogIds = Set(catalog.map { $0.id })
+        activeIntegrations = activeIntegrations.filter { catalogIds.contains($0) }
+        // Validate mainPillId: must be a non-comingSoon workspace pill in the catalog
+        if !PillCatalog.available.contains(where: { $0.id == mainPillId && $0.category == .workspace && !$0.comingSoon }) {
+            mainPillId = PillCatalog.defaultMainPillId
+        }
+        // mainPillId must never be in activeIntegrations (migration + invariant)
+        activeIntegrations.remove(mainPillId)
+        for def in catalog {
+            // mainPillId always loads; activeIntegrations load
+            let shouldLoad = def.id == mainPillId || activeIntegrations.contains(def.id)
+            let loaded = tasks.contains(where: { $0.id == def.id })
+            if shouldLoad && !loaded {
+                let task = AgentTask(id: def.id, name: def.name, color: def.color,
+                                     state: .idle, steps: [], source: def.source, isIntegration: true)
+                tasks.append(task)
+            }
+            if !shouldLoad && loaded {
+                tasks.removeAll { $0.id == def.id }
+            }
+        }
+        sortTasksByCatalog()
+        if focusId == nil { focusId = mainPillId }
+        syncMode()
+    }
+
+    /// Toggle a catalog pill on/off.
+    /// mainPillId: never toggleable (change via the Main picker first).
+    /// Max 4 non-main pills active at once.
+    /// Switch the always-on workspace pill. Mirrors what the Settings Picker does.
+    func setMainPill(_ id: String) {
+        guard PillCatalog.available.contains(where: {
+            $0.id == id && $0.category == .workspace && !$0.comingSoon
+        }) else { return }
+        mainPillId = id
+        activeIntegrations.remove(id)
+        loadIntegrationTasks()
+        setFocus(id)
+    }
+
+    func toggleIntegration(_ id: String) {
+        guard id != mainPillId else { return }
+        guard PillCatalog.available.contains(where: { $0.id == id }) else { return }
+        if activeIntegrations.contains(id) {
+            activeIntegrations.remove(id)
+            tasks.removeAll { $0.id == id }
+            if focusId == id { focusId = mainPillId }
+        } else {
+            guard activeIntegrations.count < 4 else { return }
+            activeIntegrations.insert(id)
+            if let def = PillCatalog.available.first(where: { $0.id == id }),
+               !tasks.contains(where: { $0.id == id }) {
+                let task = AgentTask(id: def.id, name: def.name, color: def.color,
+                                     state: .idle, steps: [], source: def.source, isIntegration: true)
+                tasks.append(task)
+                sortTasksByCatalog()
+            }
+        }
+        syncMode()
+    }
+
+    /// Sort tasks so catalog pills are in catalog order, undeclared pills sit right after
+    /// integration_claude (matching HookServer insertion behaviour), and the rest follows.
+    private func sortTasksByCatalog() {
+        let order = PillCatalog.available.enumerated()
+            .reduce(into: [String: Int]()) { $0[$1.element.id] = $1.offset }
+        let catalogPills    = tasks.filter { order[$0.id] != nil }
+        let undeclaredPills = tasks.filter { order[$0.id] == nil }
+        let sortedCatalog   = catalogPills.sorted { (order[$0.id] ?? 0) < (order[$1.id] ?? 0) }
+        if let claudeIdx = sortedCatalog.firstIndex(where: { $0.id == "integration_claude" }) {
+            var result: [AgentTask] = Array(sortedCatalog[...claudeIdx])
+            result.append(contentsOf: undeclaredPills)
+            if claudeIdx + 1 < sortedCatalog.count {
+                result.append(contentsOf: sortedCatalog[(claudeIdx + 1)...])
+            }
+            tasks = result
+        } else {
+            tasks = undeclaredPills + sortedCatalog
+        }
+    }
+
+}

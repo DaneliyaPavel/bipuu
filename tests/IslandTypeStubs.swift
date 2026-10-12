@@ -1,5 +1,5 @@
 // Minimal stubs for IslandMode and IslandView — used only by standalone test compilation.
-// The real definitions live in Sources/CoucouKit/IslandTypes.swift.
+// The real definitions live in Sources/BipuuKit/IslandTypes.swift.
 import Foundation
 
 enum IslandMode: String, CaseIterable {
@@ -8,8 +8,5 @@ enum IslandMode: String, CaseIterable {
 
 enum IslandView: String, CaseIterable {
     case overview, empty, approval, question, error, finished
-    case confused, upload, uploading, choose, mail, prompt
-    case searching, result, note, settings, greeting, wardrobe, recap
-    case listening
-    case voiceResult
+    case note, settings
 }
