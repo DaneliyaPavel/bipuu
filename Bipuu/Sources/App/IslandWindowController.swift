@@ -706,6 +706,9 @@ func islandSize(mode: IslandMode, view: IslandView,
         if view == .question, let h = QuestionLayout.height {
             return (IslandConst.expandedWidth, h)
         }
+        if view == .approval, let h = ApprovalLayout.height {
+            return (IslandConst.expandedWidth, h)
+        }
         return (IslandConst.expandedWidth, layout.height)
     }
 }

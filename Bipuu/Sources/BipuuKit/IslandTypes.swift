@@ -43,6 +43,13 @@ struct ApprovalInfo: Sendable {
     var queueCount: Int = 1
     /// Project of the session that asks (several sessions can share one pill).
     var projectName: String = ""
+    /// The operation to authorise, complete up to a cap (see ApprovalDescriber).
+    var detail = ApprovalDescription(action: "", primary: "", fields: [], truncated: false, originalBytes: 0)
+    /// What "Always" would create; shown next to the button when offered.
+    var always = AlwaysScope.none
+    var alwaysOffered = false
+    /// When this card first appeared. Allowing is held back briefly after it (ApprovalGuard).
+    var shownAt: Date = Date()
 }
 
 // MARK: - Pill badge (shown on pill edge when non-focused task has an alert)

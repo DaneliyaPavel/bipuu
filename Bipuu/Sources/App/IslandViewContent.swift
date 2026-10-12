@@ -223,6 +223,8 @@ struct EmptyStateView: View {
 
 struct ApprovalView: View {
     @ObservedObject var state: AppState
+    /// False for the first moments of a card: an Allow click then was aimed at something else.
+    @State private var armed = false
 
     var approval: ApprovalInfo? { state.pendingApproval }
 
@@ -237,6 +239,7 @@ struct ApprovalView: View {
         // Captured when the card is drawn: a click answers the request that was on screen,
         // and is ignored if the card has moved on to the next one since.
         let shownId = approval?.id
+        let detail = approval?.detail
         ZStack {
             CardBackground(wash: .amber)
             VStack(alignment: .leading, spacing: 5) {
@@ -249,8 +252,35 @@ struct ApprovalView: View {
                             .foregroundColor(Color(hex: "#8E939C"))
                             .monospacedDigit()
                     }
+                    Spacer(minLength: 0)
+                    if let action = detail?.action, !action.isEmpty {
+                        Text(action)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color(hex: "#8E939C"))
+                            .lineLimit(1)
+                    }
                 }
-                CodeBlock(text: approval?.command ?? approval?.tool ?? "…")
+                if let detail {
+                    ApprovalOperationView(detail: detail)
+                } else {
+                    CodeBlock(text: approval?.command ?? approval?.tool ?? "…")
+                }
+                if approval?.alwaysOffered == true, let always = approval?.always, !always.rules.isEmpty {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(Array(always.rules.prefix(2).enumerated()), id: \.offset) { _, rule in
+                            Text(verbatim: "Always: \(rule.text) · \(rule.scope)")
+                                .font(.system(size: 10.5))
+                                .foregroundColor(Color(hex: "#C9A24B"))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if always.rules.count > 2 {
+                            Text(verbatim: "+\(always.rules.count - 2) more rule(s)")
+                                .font(.system(size: 10.5))
+                                .foregroundColor(Color(hex: "#C9A24B"))
+                        }
+                    }
+                }
                 HStack(spacing: 8) {
                     SecondaryButton("Deny") {
                         HookServer.shared.sendApprovalDecision("deny", for: shownId)
@@ -258,14 +288,13 @@ struct ApprovalView: View {
                     PrimaryButton("Allow") {
                         HookServer.shared.sendApprovalDecision("allow", for: shownId)
                     }
-                    // Codex, Copilot CLI and Muse Code do not support updatedPermissions
-                    let hideAlways = approval?.pillId == "agent_codex"
-                        || approval?.pillId == "agent_copilot"
-                        || approval?.pillId == "agent_muse"
-                    if !hideAlways {
+                    .disabled(!armed).opacity(armed ? 1 : 0.35)
+                    // Offered only when its exact effect is shown above.
+                    if approval?.alwaysOffered == true {
                         SecondaryButton("Always") {
                             HookServer.shared.sendApprovalDecision("always", for: shownId)
                         }
+                        .disabled(!armed).opacity(armed ? 1 : 0.35)
                     }
                 }
             }
@@ -273,6 +302,68 @@ struct ApprovalView: View {
             .padding(.trailing, 16)
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // Re-armed for every request that takes the card, from the moment it first appeared.
+        .task(id: shownId) {
+            armed = ApprovalGuard.isArmed(shownAt: approval?.shownAt)
+            guard !armed, let shownAt = approval?.shownAt else { return }
+            let wait = ApprovalGuard.armDelay - Date().timeIntervalSince(shownAt)
+            try? await Task.sleep(for: .seconds(max(0, wait)))
+            if !Task.isCancelled { armed = true }
+        }
+    }
+}
+
+/// The operation to authorise, whole: scrolls instead of clipping, and says when it was cut.
+struct ApprovalOperationView: View {
+    let detail: ApprovalDescription
+
+    private var visibleHeight: CGFloat {
+        CGFloat(ApprovalLayout.visibleLines(for: detail)) * ApprovalLayout.lineHeight + 12
+    }
+    private var overflows: Bool {
+        ApprovalLayout.totalLines(for: detail) > ApprovalLayout.maxVisibleLines
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ScrollView(.vertical, showsIndicators: overflows) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(detail.primary.isEmpty ? "(empty)" : detail.primary)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(Color(hex: "#E8E9EC"))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ForEach(Array(detail.fields.enumerated()), id: \.offset) { _, f in
+                        Text(f.label)
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundColor(Color(hex: "#8E939C"))
+                            .padding(.top, 2)
+                        Text(f.value)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(Color(hex: "#C5C8CD"))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.horizontal, 10).padding(.vertical, 5)
+            }
+            .frame(height: visibleHeight)
+            .background(Color.white.opacity(0.07))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.06)))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            if detail.truncated {
+                Text(verbatim: "⚠︎ Cut at \(ApprovalDescriber.capBytes / 1024) KB — the request is \(max(1, detail.originalBytes / 1024)) KB. Not everything is shown: deny, or review it in the terminal.")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundColor(Color(hex: "#FF8D97"))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if overflows {
+                Text(verbatim: "\(ApprovalLayout.totalLines(for: detail)) lines — scroll to read all")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(Color(hex: "#8E939C"))
+            }
         }
     }
 }

@@ -10,6 +10,8 @@ They pin the contract between an agent, the relay and the app socket:
 A fake app (a Unix socket in a throwaway HOME) stands in for Bipuu.
 Run: python3 -m unittest discover -s tests/relay -v
 """
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -25,22 +27,55 @@ RELAY = os.path.join(ROOT, "Bipuu", "Resources", "hook", "bipuu-hook.py")
 WRAPPER = os.path.join(ROOT, "Bipuu", "Resources", "hook", "bipuu-hook")
 
 
-class FakeApp:
-    """A one-shot-per-connection socket server standing in for Bipuu."""
+KEY = bytes.fromhex("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+OTHER_KEY = bytes.fromhex("ff" * 32)
 
-    def __init__(self, home, reply=None):
+
+def mac(key, tag, nonce, body):
+    return hmac.new(key, tag + b"|" + nonce.encode() + b"|" + body, hashlib.sha256).hexdigest()
+
+
+class FakeApp:
+    """A stand-in for Bipuu speaking protocol BIPUU1 over a Unix socket in a throwaway HOME.
+
+    reply        decision JSON to send back (None: send nothing)
+    server_key   key used to sign replies (default: the real channel key; a squatter uses another)
+    signing      "ok" | "none" (plain, unsigned) | "other-nonce" (replay) | "tamper" (body changed after signing)
+    """
+
+    def __init__(self, home, reply=None, server_key=KEY, signing="ok", write_key=True):
         self.dir = os.path.join(home, "Library", "Application Support", "Bipuu")
         os.makedirs(self.dir, exist_ok=True)
+        os.chmod(self.dir, 0o700)
+        self.key_path = os.path.join(self.dir, "channel.key")
+        if write_key:
+            with open(self.key_path, "w") as f:
+                f.write(KEY.hex() + "\n")
+            os.chmod(self.key_path, 0o600)
         self.path = os.path.join(self.dir, "bipuu.sock")
-        self.reply = reply            # None: read and close; str: write after reading the request
-        self.received = []
+        self.reply = reply
+        self.server_key = server_key
+        self.signing = signing
+        self.received = []        # only requests whose signature verified
+        self.rejected = 0
         self._srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._srv.bind(self.path)
+        os.chmod(self.path, 0o600)
         self._srv.listen(8)
         self._srv.settimeout(0.2)
         self._stop = False
         self._t = threading.Thread(target=self._loop, daemon=True)
         self._t.start()
+
+    def _read_two_lines(self, c):
+        buf = b""
+        while buf.count(b"\n") < 2:
+            chunk = c.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        parts = buf.split(b"\n")
+        return (parts[0], parts[1]) if len(parts) >= 2 else (b"", b"")
 
     def _loop(self):
         while not self._stop:
@@ -48,22 +83,32 @@ class FakeApp:
                 c, _ = self._srv.accept()
             except (socket.timeout, OSError):
                 continue
-            buf = b""
             c.settimeout(2)
             try:
-                while b"\n" not in buf:
-                    chunk = c.recv(65536)
-                    if not chunk:
-                        break
-                    buf += chunk
-                if buf.strip():
-                    self.received.append(json.loads(buf.decode()))
-                if self.reply is not None:
-                    c.sendall((self.reply + "\n").encode())
+                header, body = self._read_two_lines(c)
+                h = header.decode("ascii", "replace").split(" ")
+                nonce = h[1] if len(h) == 3 else ""
+                if len(h) == 3 and h[0] == "BIPUU1" and hmac.compare_digest(mac(KEY, b"bipuu1", nonce, body), h[2]):
+                    self.received.append(json.loads(body.decode()))
+                    if self.reply is not None:
+                        self._send_reply(c, nonce)
+                else:
+                    self.rejected += 1
             except Exception:
                 pass
             finally:
                 c.close()
+
+    def _send_reply(self, c, nonce):
+        body = self.reply.encode()
+        if self.signing == "none":
+            c.sendall(body + b"\n")
+            return
+        signed_nonce = "f" * 32 if self.signing == "other-nonce" else nonce
+        header = "BIPUU1R %s" % mac(self.server_key, b"bipuu1r", signed_nonce, body)
+        if self.signing == "tamper":
+            body = body.replace(b"deny", b"allow").replace(b"ask", b"allow")
+        c.sendall(header.encode() + b"\n" + body + b"\n")
 
     def close(self):
         self._stop = True
@@ -78,8 +123,8 @@ class RelayTestCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.home, True)
         self.app = None
 
-    def start_app(self, reply=None):
-        self.app = FakeApp(self.home, reply)
+    def start_app(self, reply=None, **kw):
+        self.app = FakeApp(self.home, reply, **kw)
         self.addCleanup(self.app.close)
         return self.app
 
@@ -186,7 +231,10 @@ class AppAbsent(RelayTestCase):
 
     def test_stale_socket_file_is_treated_as_absent(self):
         d = os.path.join(self.home, "Library", "Application Support", "Bipuu")
-        os.makedirs(d)
+        os.makedirs(d, mode=0o700)
+        with open(os.path.join(d, "channel.key"), "w") as f:
+            f.write(KEY.hex() + "\n")
+        os.chmod(os.path.join(d, "channel.key"), 0o600)
         open(os.path.join(d, "bipuu.sock"), "w").close()   # a regular file, nobody listening
         p = self.run_relay(PERM)
         self.assertEqual((p.returncode, p.stdout), (0, b""))
@@ -299,6 +347,80 @@ class Statusline(RelayTestCase):
         self.start_app()
         p = self.run_relay({"session_id": "s", "rate_limits": {}}, "--statusline")
         self.assertEqual((p.returncode, p.stdout), (0, b""))
+
+
+class ChannelAuthentication(RelayTestCase):
+    """The relay only believes an app that proves it holds the channel key, and only talks to a private endpoint."""
+
+    def test_requests_carry_a_valid_signature(self):
+        app = self.start_app()
+        self.run_relay({"hook_event_name": "Stop", "session_id": "s", "cwd": "/w"}, "--agent", "x")
+        self.assertEqual(len(app.received), 1)          # FakeApp records only verified requests
+        self.assertEqual(app.rejected, 0)
+
+    def test_a_squatter_with_another_key_cannot_approve(self):
+        self.start_app(json.dumps({"permissionDecision": "allow"}), server_key=OTHER_KEY)
+        p = self.run_relay(PERM)
+        self.assertEqual((p.returncode, p.stdout), (0, b""))
+
+    def test_a_squatter_cannot_force_copilot_past_its_own_prompt(self):
+        self.start_app(json.dumps({"permissionDecision": "allow"}), server_key=OTHER_KEY)
+        p = self.run_relay(PERM, "--agent", "copilot")
+        self.assertEqual(self.out_json(p), {"permissionDecision": "ask"})
+
+    def test_unsigned_allow_is_ignored(self):
+        self.start_app(json.dumps({"permissionDecision": "allow"}), signing="none")
+        p = self.run_relay(PERM)
+        self.assertEqual((p.returncode, p.stdout), (0, b""))
+
+    def test_a_reply_recorded_for_another_request_is_ignored(self):
+        self.start_app(json.dumps({"permissionDecision": "allow"}), signing="other-nonce")
+        p = self.run_relay(PERM)
+        self.assertEqual((p.returncode, p.stdout), (0, b""))
+
+    def test_a_reply_changed_after_signing_is_ignored(self):
+        self.start_app(json.dumps({"permissionDecision": "deny"}), signing="tamper")
+        p = self.run_relay(PERM)
+        self.assertEqual((p.returncode, p.stdout), (0, b""))
+
+    def test_answers_to_questions_need_the_signature_too(self):
+        self.start_app(json.dumps({"permissionDecision": "answer", "answers": {"Q": "A"}}), signing="none")
+        p = self.run_relay({"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "session_id": "s",
+                            "tool_input": {"questions": [{"question": "Q"}]}}, "--ask")
+        self.assertEqual((p.returncode, p.stdout), (0, b""))
+
+    def test_relay_refuses_a_key_other_users_can_read(self):
+        app = self.start_app()
+        os.chmod(app.key_path, 0o644)
+        p = self.run_relay(PERM)
+        self.assertEqual((p.returncode, p.stdout), (0, b""))
+        self.assertEqual(app.received, [])
+
+    def test_relay_does_nothing_without_a_key(self):
+        app = self.start_app(write_key=False)
+        p = self.run_relay({"hook_event_name": "Stop", "session_id": "s", "cwd": "/w"}, "--agent", "x")
+        self.assertEqual((p.returncode, p.stdout, app.received), (0, b"", []))
+
+    def test_relay_refuses_a_socket_other_users_can_reach(self):
+        app = self.start_app()
+        os.chmod(app.path, 0o666)
+        p = self.run_relay(PERM)
+        self.assertEqual((p.returncode, p.stdout, app.received), (0, b"", []))
+
+    def test_relay_refuses_a_directory_other_users_can_enter(self):
+        app = self.start_app()
+        os.chmod(app.dir, 0o755)
+        p = self.run_relay(PERM)
+        self.assertEqual((p.returncode, p.stdout, app.received), (0, b"", []))
+        os.chmod(app.dir, 0o700)
+
+    def test_relay_refuses_a_symlinked_socket(self):
+        app = self.start_app()
+        link = os.path.join(self.home, "elsewhere.sock")
+        os.rename(app.path, link)
+        os.symlink(link, app.path)
+        p = self.run_relay(PERM)
+        self.assertEqual((p.returncode, p.stdout, app.received), (0, b"", []))
 
 
 class ShellWrapper(RelayTestCase):

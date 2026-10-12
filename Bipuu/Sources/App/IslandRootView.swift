@@ -85,6 +85,13 @@ struct IslandContainer: View {
                 islandTopRadius  = tr
             }
         }
+        .onChange(of: state.pendingApproval?.id) { _, _ in
+            // Another request took the card: its operation may need more or less room.
+            guard state.mode == .expanded, state.view == .approval else { return }
+            let (w, h) = islandSize(mode: .expanded, view: .approval,
+                                    nw: state.notchWidth, nh: state.notchHeight)
+            withAnimation(openSpring) { islandWidth = w; islandHeight = h }
+        }
         .onChange(of: state.view) { _, newView in
             guard state.mode == .expanded else { return }
             let (w, h) = islandSize(mode: .expanded, view: newView,
@@ -373,7 +380,7 @@ struct IslandContentView: View {
             ZStack {
                 ForEach(IslandView.allCases, id: \.self) { v in
                     let active = state.view == v
-                    let isTall = false
+                    let isTall = (v == .approval && active)
                     let anim: Animation = active
                         ? .spring(response: 0.4, dampingFraction: 0.8).delay(0.16)
                         : .easeIn(duration: 0.16)

@@ -21,6 +21,13 @@ struct QueuedApproval: Equatable, Sendable {
     /// Host app / bundle id of the session, so the card's pill keeps showing where it runs.
     var hostApp: String? = nil
     var bundleId: String = ""
+    /// The operation as a person must read it (complete up to a cap, truncation flagged).
+    var detail = ApprovalDescription(action: "", primary: "", fields: [], truncated: false, originalBytes: 0)
+    /// The rule change "Always" would make; only meaningful when `alwaysOffered`.
+    var always = AlwaysScope.none
+    /// True only when "Always" has an exactly described effect. A decision of "always" for
+    /// a request that did not offer it is refused.
+    var alwaysOffered = false
 }
 
 struct ApprovalQueue: Sendable {

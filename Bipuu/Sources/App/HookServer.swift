@@ -19,6 +19,8 @@ final class HookServer: @unchecked Sendable {
     static var socketPath: String {
         return supportDir.appendingPathComponent("bipuu.sock").path
     }
+    /// Shared secret of the hook channel (mode 0600): see ChannelAuth.
+    static var channelKeyURL: URL { supportDir.appendingPathComponent("channel.key") }
     // hookScriptPath is only used by the non-App Store build.
     // App Store build derives the command from the panel-selected claudeURL in buildHooksData(claudeURL:).
     /// Opt-in diagnostics (`BIPUU_HOOK_TRACE=1` or the `hookTrace` default): one log line per hook event.
@@ -34,6 +36,12 @@ final class HookServer: @unchecked Sendable {
     private static let maxConnections = 32              // concurrent connection ceiling
 
     private var serverFD: Int32 = -1
+    /// Set once at start; the server accepts nothing without it.
+    private var channelKey: SymmetricKey?
+    /// Nonce of each authenticated connection, so a reply can be signed for exactly that request.
+    private var nonces: [Int32: String] = [:]
+    private let nonceLock = NSLock()
+    private var lastRejectLog = Date.distantPast
     private let connectionLock = NSLock()
     private var connectionCount = 0
     /// Permission requests waiting for a click, oldest first; the head is on the card.
@@ -101,7 +109,9 @@ final class HookServer: @unchecked Sendable {
                                               command: head.command, inputKey: head.inputKey,
                                               pillId: head.pillId, id: head.id,
                                               queueCount: approvals.count,
-                                              projectName: head.projectName)
+                                              projectName: head.projectName,
+                                              detail: head.detail, always: head.always,
+                                              alwaysOffered: head.alwaysOffered)
         state.isPinned = true
         // Approval always forces the island open — the user must be able to respond.
         // Save the focus once, so it comes back when the last request is gone.
@@ -265,6 +275,25 @@ final class HookServer: @unchecked Sendable {
         let dir = Self.supportDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? FileManager.default.setAttributes([.posixPermissions: 0o700 as NSNumber], ofItemAtPath: dir.path)
+        do {
+            channelKey = try ChannelAuth.loadOrCreateKey(at: Self.channelKeyURL)
+        } catch {
+            // Without a trustworthy key the app cannot tell the relay from anything else:
+            // do not serve. Agents carry on and ask in their own UI.
+            bipuuLog("Hook channel disabled: cannot use \(Self.channelKeyURL.path) (\(error))")
+            return
+        }
+        // A second copy must not replace the first one's socket, and has nothing to show without it.
+        switch Self.prepareSocketPath(Self.socketPath) {
+        case .free: break
+        case .liveServer:
+            bipuuLog("Another Bipuu is already serving \(Self.socketPath); this instance quits")
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return
+        case .foreign:
+            bipuuLog("\(Self.socketPath) exists and is not a socket owned by this user; refusing to remove it")
+            return
+        }
         installHookScript()
         Thread.detachNewThread { self.serverThread() }
     }
@@ -279,7 +308,7 @@ final class HookServer: @unchecked Sendable {
             NSLog("HookServer: socket path too long (\(path.utf8.count) bytes, max \(maxSunPathBytes)): \(path)")
             return
         }
-        try? FileManager.default.removeItem(atPath: path)
+        // (start() already cleared a stale socket; never delete anything here.)
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return }
@@ -323,6 +352,31 @@ final class HookServer: @unchecked Sendable {
         }
     }
 
+    enum SocketPathState { case free, liveServer, foreign }
+
+    /// Clears a stale socket left by a previous run. A path that answers is a running server, and
+    /// anything that is not our own socket file is left alone.
+    static func prepareSocketPath(_ path: String) -> SocketPathState {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return .free }
+        guard (st.st_mode & S_IFMT) == S_IFSOCK, st.st_uid == getuid() else { return .foreign }
+        let probe = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard probe >= 0 else { return .foreign }
+        defer { close(probe) }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let cpath = Array(path.utf8CString)
+        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+            for (i, c) in cpath.enumerated() where i < raw.count { raw[i] = UInt8(bitPattern: c) }
+        }
+        let rc = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(probe, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        if rc == 0 { return .liveServer }
+        unlink(path)
+        return .free
+    }
+
     // MARK: - Client handler (background thread)
 
     private func handleClient(fd: Int32) {
@@ -333,21 +387,36 @@ final class HookServer: @unchecked Sendable {
         var tv = timeval(tv_sec: Self.receiveTimeoutSeconds, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-        // Read newline-delimited JSON
+        // Two newline-terminated lines: the authentication header, then the JSON body.
+        var header = Data()
         var raw = Data()
+        var inBody = false
         var buf = [UInt8](repeating: 0, count: 4096)
         outer: while true {
             let n = recv(fd, &buf, buf.count, 0)
             if n <= 0 { break }
             for i in 0..<n {
-                if buf[i] == UInt8(ascii: "\n") { break outer }
-                raw.append(buf[i])
+                if buf[i] == UInt8(ascii: "\n") {
+                    if inBody { break outer }
+                    inBody = true
+                    continue
+                }
+                if inBody { raw.append(buf[i]) } else { header.append(buf[i]) }
             }
-            if raw.count > Self.maxPayload { break }
+            if raw.count + header.count > Self.maxPayload { break }
         }
 
-        guard !raw.isEmpty,
-              let payload = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
+        // Nothing is acted on unless the relay proved it holds the channel key.
+        guard let key = channelKey, !raw.isEmpty, raw.count + header.count <= Self.maxPayload,
+              let headerText = String(data: header, encoding: .utf8),
+              let nonce = ChannelAuth.authenticate(header: headerText, body: raw, key: key) else {
+            noteRejectedMessage()
+            close(fd)
+            return
+        }
+        nonceLock.lock(); nonces[fd] = nonce; nonceLock.unlock()
+
+        guard let payload = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
             sendLine(fd: fd, text: #"{"ok":true}"#)
             close(fd)
             return
@@ -802,14 +871,33 @@ final class HookServer: @unchecked Sendable {
             return
         }
 
-        let command = toolInput["command"] as? String ?? tool
+        // What the card shows must be the operation itself, in full, with any cut flagged.
+        let detail = ApprovalDescriber.describe(tool: tool, input: toolInput, cwd: cwd)
+        let command = detail.primary.isEmpty ? tool : detail.primary
+        // "Always" is offered only when its effect can be shown exactly. Claude Code (and Cursor,
+        // which rides its hooks) tell us the rule; Hermes keeps its own memory; Codex, Copilot
+        // and Muse have no durable rule, so for them "Always" would just be "Allow".
+        let always: AlwaysScope
+        let alwaysOffered: Bool
+        if isHermesRequest {
+            always = AlwaysScope(rules: [.init(text: "Remember this choice", scope: "for as long as Hermes decides")],
+                                 fullyUnderstood: true)
+            alwaysOffered = true
+        } else if isCodexRequest || isCopilotRequest || isMuseRequest {
+            always = .none
+            alwaysOffered = false
+        } else {
+            always = AlwaysScope.parse(suggestions: payload["permission_suggestions"])
+            alwaysOffered = always.isOffered
+        }
 
         // Several requests can wait at once (several sessions or agents): they queue, the
         // card shows the oldest. Past the cap, the newest goes back to its own terminal.
         let entry = QueuedApproval(id: UUID(), fd: fd, sessionId: sessionId, pillId: pillId,
                                    projectName: projectName, cwd: cwd, tool: tool,
                                    command: command, inputKey: inputKey,
-                                   hostApp: terminalHost?.bundleId, bundleId: bundleId)
+                                   hostApp: terminalHost?.bundleId, bundleId: bundleId,
+                                   detail: detail, always: always, alwaysOffered: alwaysOffered)
         guard approvals.enqueue(entry) == .accepted else {
             bipuuLog("PermissionRequest \(tool): \(ApprovalQueue.maxPending) already waiting, asked in the terminal")
             Task.detached { [weak self] in
@@ -870,7 +958,18 @@ final class HookServer: @unchecked Sendable {
             return
         }
 
-        if Self.traceEnabled { bipuuLog("trace approval decision=\(escapedForLog(decision)) queued=\(approvals.count)") }
+        let shownAt = AppState.shared.pendingApproval.flatMap { $0.id == head.id ? $0.shownAt : nil }
+        guard ApprovalGuard.permits(decision: decision, shownAt: shownAt) else {
+            // The card has only just appeared: this click was most likely aimed at something else.
+            bipuuLog("Approval '\(decision)' ignored: card shown less than \(ApprovalGuard.armDelay) s ago")
+            return
+        }
+        if decision == "always" && !head.alwaysOffered {
+            // The card did not offer "Always": nobody saw what it would create. Ignore it.
+            bipuuLog("Approval 'always' refused: not offered for this request")
+            return
+        }
+        if Self.traceEnabled { bipuuLog("trace approval decision=\(escapedForLog(decision)) queued=\(approvals.count) age_ms=\(shownAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? -1) appkit_event=\(NSApp.currentEvent.map { String($0.type.rawValue) } ?? "none")") }
         let json: String
         switch decision {
         case "allow":  json = #"{"permissionDecision":"allow"}"#
@@ -1199,8 +1298,15 @@ final class HookServer: @unchecked Sendable {
         appendAppLog("bipuu.log", message)
     }
 
+    /// Writes one reply line. A reply on an authenticated connection is signed for that request's
+    /// nonce, so the relay can tell it from anything a squatter could write.
     private func sendLine(fd: Int32, text: String) {
-        let bytes = Array((text + "\n").utf8)
+        nonceLock.lock(); let nonce = nonces[fd]; nonceLock.unlock()
+        var message = text + "\n"
+        if let nonce, let key = channelKey {
+            message = ChannelAuth.replyHeader(for: Data(text.utf8), nonce: nonce, key: key) + "\n" + message
+        }
+        let bytes = Array(message.utf8)
         bytes.withUnsafeBytes { buffer in
             var sent = 0
             while sent < buffer.count {
@@ -1209,6 +1315,17 @@ final class HookServer: @unchecked Sendable {
                 sent += n
             }
         }
+    }
+
+    /// Unauthenticated or malformed messages are dropped without an answer. One log line a minute,
+    /// never any content.
+    private func noteRejectedMessage() {
+        nonceLock.lock()
+        let now = Date()
+        let log = now.timeIntervalSince(lastRejectLog) > 60
+        if log { lastRejectLog = now }
+        nonceLock.unlock()
+        if log { bipuuLog("Dropped a hook message that did not carry a valid channel signature") }
     }
 
     // MARK: - bipuu-hook script installation

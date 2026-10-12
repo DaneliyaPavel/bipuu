@@ -120,7 +120,13 @@ final class AppState: ObservableObject {
     }
 
     // Pending approval request from Claude Code hook
-    @Published var pendingApproval: ApprovalInfo? = nil
+    @Published var pendingApproval: ApprovalInfo? = nil {
+        didSet {
+            ApprovalLayout.height = pendingApproval.map {
+                ApprovalLayout.height(for: $0.detail, always: $0.always, offersAlways: $0.alwaysOffered)
+            }
+        }
+    }
 
     // Pending AskUserQuestion from Claude Code hook
     @Published var pendingQuestion: AskQuestion? = nil {
